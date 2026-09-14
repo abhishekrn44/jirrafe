@@ -1,0 +1,22 @@
+# build output
+.gradle/
+build/
+target/
+out/
+.kotlin/
+
+# jirrafe's own output
+.jirrafe/
+
+# fixture artifacts are built, not committed
+jirrafe-fixtures/local-repo/
+
+# IDE and tool state
+.idea/
+*.iml
+.vscode/
+.serena/
+
+# local agent settings
+.claude/settings.local.json
+.claude/.headroom_wrap_marker.json

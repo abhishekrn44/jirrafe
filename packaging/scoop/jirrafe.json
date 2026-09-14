@@ -1,0 +1,16 @@
+{
+    "version": "0.1.0",
+    "description": "Code graph and knowledge graph of JVM projects, including internal jars, served over MCP",
+    "homepage": "https://github.com/abhishekrn44/jirrafe",
+    "license": "Apache-2.0",
+    "url": "https://github.com/abhishekrn44/jirrafe/releases/download/v0.1.0/jirrafe-0.1.0-all.jar",
+    "hash": "REPLACE_WITH_SHA256_OF_THE_JAR",
+    "depends": "java/temurin17-jdk",
+    "bin": [
+        ["jirrafe-0.1.0-all.jar", "jirrafe", "java -jar \"$dir\\jirrafe-0.1.0-all.jar\""]
+    ],
+    "checkver": "github",
+    "autoupdate": {
+        "url": "https://github.com/abhishekrn44/jirrafe/releases/download/v$version/jirrafe-$version-all.jar"
+    }
+}

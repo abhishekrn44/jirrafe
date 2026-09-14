@@ -1,0 +1,10 @@
+orders:
+  max: 10
+  topic: orders-placed
+  pricing-url: http://pricing.internal/api
+  api-key: change-me
+spring:
+  application:
+    name: orders
+  datasource:
+    url: jdbc:h2:mem:orders

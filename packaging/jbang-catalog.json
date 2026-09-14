@@ -1,0 +1,9 @@
+{
+  "aliases": {
+    "jirrafe": {
+      "script-ref": "https://github.com/abhishekrn44/jirrafe/releases/latest/download/jirrafe-all.jar",
+      "description": "Code graph and knowledge graph of JVM projects, including internal jars, served over MCP",
+      "java": "17+"
+    }
+  }
+}

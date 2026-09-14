@@ -1,0 +1,71 @@
+name: jirrafe diff
+description: Posts a structural diff of the code graph (added, removed and changed classes and members, affected callers by community and flow, tests to run) as a pull request comment.
+author: jirrafe
+
+inputs:
+  version:
+    description: jirrafe release to download (a GitHub release tag of the jirrafe repository)
+    required: false
+    default: latest
+  jar:
+    description: Path to a jirrafe fat jar to use instead of downloading one
+    required: false
+    default: ""
+  base:
+    description: Base git ref (default is the pull request base)
+    required: false
+    default: ${{ github.event.pull_request.base.sha }}
+  java-version:
+    description: JDK to run jirrafe and the project build with
+    required: false
+    default: "17"
+  token:
+    description: Token used to post the comment
+    required: false
+    default: ${{ github.token }}
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-java@v4
+      with:
+        distribution: temurin
+        java-version: ${{ inputs.java-version }}
+
+    - name: Fetch jirrafe
+      shell: bash
+      run: |
+        if [ -n "${{ inputs.jar }}" ]; then
+          echo "JIRRAFE_JAR=${{ inputs.jar }}" >> "$GITHUB_ENV"
+        else
+          if [ "${{ inputs.version }}" = "latest" ]; then
+            url=$(curl -sSL -H "Authorization: Bearer ${{ inputs.token }}" https://api.github.com/repos/abhishekrn44/jirrafe/releases/latest | grep browser_download_url | grep 'jirrafe-.*-all.jar' | head -1 | cut -d '"' -f 4)
+          else
+            url="https://github.com/abhishekrn44/jirrafe/releases/download/${{ inputs.version }}/jirrafe-${{ inputs.version }}-all.jar"
+          fi
+          curl -sSL -o "$RUNNER_TEMP/jirrafe.jar" "$url"
+          echo "JIRRAFE_JAR=$RUNNER_TEMP/jirrafe.jar" >> "$GITHUB_ENV"
+        fi
+
+    - name: Build graphs and diff
+      shell: bash
+      run: |
+        git fetch --no-tags --depth=1 origin "${{ inputs.base }}" || true
+        java -jar "$JIRRAFE_JAR" build --dir .
+        java -jar "$JIRRAFE_JAR" diff --dir . --base "${{ inputs.base }}" --output "$RUNNER_TEMP/jirrafe-diff.md"
+
+    - name: Comment on the pull request
+      if: github.event_name == 'pull_request'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+      run: |
+        body=$(cat "$RUNNER_TEMP/jirrafe-diff.md")
+        marker="<!-- jirrafe-diff -->"
+        existing=$(gh api "repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/comments" --paginate --jq ".[] | select(.body | startswith(\"$marker\")) | .id" | head -1)
+        printf '%s\n%s' "$marker" "$body" > "$RUNNER_TEMP/comment.md"
+        if [ -n "$existing" ]; then
+          gh api -X PATCH "repos/${{ github.repository }}/issues/comments/$existing" -F body=@"$RUNNER_TEMP/comment.md" > /dev/null
+        else
+          gh api "repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/comments" -F body=@"$RUNNER_TEMP/comment.md" > /dev/null
+        fi

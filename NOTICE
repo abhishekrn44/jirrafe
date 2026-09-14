@@ -1,0 +1,17 @@
+jirrafe
+Copyright 2026 the jirrafe contributors
+
+Licensed under the Apache License, Version 2.0.
+
+This product bundles or depends on the following third-party software:
+
+- ASM (org.ow2.asm) - BSD 3-Clause License - https://asm.ow2.io
+- Vineflower (org.vineflower) - Apache License 2.0 - https://github.com/Vineflower/vineflower
+- networkanalysis (nl.cwts) - MIT License - https://github.com/CWTSLeiden/networkanalysis
+- sqlite-jdbc (org.xerial) - Apache License 2.0 - https://github.com/xerial/sqlite-jdbc
+- Clikt (com.github.ajalt.clikt) - Apache License 2.0 - https://github.com/ajalt/clikt
+- Kotlin and kotlinx libraries (org.jetbrains) - Apache License 2.0 - https://kotlinlang.org
+- MCP Kotlin SDK (io.modelcontextprotocol) - MIT License - https://github.com/modelcontextprotocol/kotlin-sdk
+- Ktor (io.ktor) - Apache License 2.0 - https://ktor.io
+- SLF4J (org.slf4j) - MIT License - https://www.slf4j.org
+- Leiden algorithm: V.A. Traag, L. Waltman, N.J. van Eck, "From Louvain to Leiden: guaranteeing well-connected communities", Scientific Reports 9, 5233 (2019)

@@ -1,0 +1,27 @@
+[
+  {
+    "question": "how is an order placed",
+    "expected": [
+      "com.example.orders.OrderController#place(com.example.orders.Order)",
+      "com.example.orders.OrderService#place(com.example.orders.Order)"
+    ]
+  },
+  {
+    "question": "what happens when an order is placed end to end",
+    "expected": [
+      "flow:com.example.orders.OrderController#place(com.example.orders.Order)",
+      "com.example.orders.EmailNotifier#notify(com.example.orders.Order)"
+    ]
+  },
+  {
+    "question": "which routes exist for orders",
+    "expected": ["route:GET /orders", "route:POST /orders"]
+  },
+  {
+    "question": "where is the api key checked",
+    "expected": [
+      "com.example.orders.ApiKeyInterceptor#isAuthorized(java.lang.String)|com.example.orders.ApiKeyInterceptor#check(java.lang.String)",
+      "config:orders.api-key"
+    ]
+  }
+]
