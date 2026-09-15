@@ -35,7 +35,7 @@ class Queries(
 ) {
     companion object {
         val json = Json { encodeDefaults = false }
-        const val DEFAULT_BUDGET = 5000 // a ceiling: new tokens in an answer cost twelve times the re-read ones a saved turn would have cost
+        const val DEFAULT_BUDGET = 3000 // a ceiling; the measured answers are well under it, and the bodies shrink last
         private val LIMITS = intArrayOf(Int.MAX_VALUE, 40, 20, 15, 10, 7, 5, 3, 1) // 20 -> 10 halved every section and left half the budget unused
         private val STRUCTURE = setOf(EdgeKind.CONTAINS, EdgeKind.MEMBER_OF_COMMUNITY, EdgeKind.STEP_OF_FLOW, EdgeKind.HAS_FINDING, EdgeKind.IMPORTS, EdgeKind.TESTS)
         private val CODE = setOf(NodeKind.CLASS, NodeKind.INTERFACE, NodeKind.ENUM, NodeKind.RECORD, NodeKind.ANNOTATION)
@@ -103,8 +103,28 @@ class Queries(
     private fun shortName(m: Node) = m.id.substringAfter('#').replace(PACKAGE, "")
 
     /** The node with this exact id, or the member an outline signature denotes (`a.Foo#save(Owner)`); the first overload wins a tie. */
-    private fun resolve(id: String): Node? = store.node(id)
-        ?: if ('#' in id) store.edgesFrom(owner(id), EdgeKind.CONTAINS).mapNotNull { store.node(it.to) }.firstOrNull { shortName(it) == id.substringAfter('#').replace(" ", "") } else null
+    private fun resolve(id: String): Node? = resolveAll(id).firstOrNull()
+
+    /** Every member an id denotes: `a.Foo#save` is all overloads of save, `a.Foo#save(Owner)` one of them. */
+    private fun resolveAll(id: String): List<Node> = store.node(id)?.let { listOf(it) } ?: if ('#' in id) {
+        val want = id.substringAfter('#').replace(" ", "")
+        store.edgesFrom(owner(id), EdgeKind.CONTAINS).mapNotNull { store.node(it.to) }
+            .filter { m -> shortName(m) == want || ('(' !in want && shortName(m).substringBefore('(') == want) }
+    } else emptyList()
+
+    /** A bare member name that matches several overloads is not a guess to make on the agent's behalf. */
+    private fun ambiguous(id: String, all: List<Node>): JsonObject? = if (all.size > 1 && '(' !in id) buildJsonObject {
+        put("error", "'$id' matches ${all.size} members; pick one")
+        put("candidates", buildJsonArray { for (n in all) add(buildJsonObject { put("id", n.id); at(n)?.let { put("at", it) }; n.signature?.let { put("signature", it) } }) })
+    } else null
+
+    /** `stale` for one node: the graph predates edits to its file, so its lines may be off. */
+    private fun staleFor(n: Node): JsonObject? {
+        val rel = n.file?.let { relative(it) } ?: return null
+        val built = store.meta("commit") ?: return null
+        if (io.jirrafe.core.store.Git.changedSources(java.nio.file.Path.of(root), built).none { it.replace('\\', '/') == rel }) return null
+        return buildJsonObject { put("builtAt", built.take(12)); put("file", rel); put("note", "the graph predates edits to this file; cited lines may be off; read the current file before quoting, or run `jirrafe index`") }
+    }
 
     /** Outline entry of a class member: the id is the class id + '#' + the signature's `name(params)`, so neither is repeated. */
     private fun memberRef(m: Node): JsonObject = buildJsonObject {
@@ -188,7 +208,9 @@ class Queries(
     }
 
     fun getNode(id: String, includeSource: Boolean = false, budget: Int = DEFAULT_BUDGET): JsonObject {
-        val n = resolve(id) ?: return error("no node '$id'; try search")
+        val all = resolveAll(id)
+        ambiguous(id, all)?.let { return it }
+        val n = all.firstOrNull() ?: return error("no node '$id'; try search")
         val id = n.id
         memory?.log("node", id)
         val out = store.edgesFrom(id).filter { it.kind !in STRUCTURE }
@@ -215,23 +237,55 @@ class Queries(
                 if (flows.isNotEmpty()) put("flows", buildJsonArray { for (f in flows.cap(l)) add(JsonPrimitive(f)) })
                 if (findings.isNotEmpty()) put("findings", buildJsonArray { for (f in findings.cap(l)) add(buildJsonObject { put("id", f.id); put("message", f.fqn) }) })
                 source?.let { put("source", sourceJson(it)) }
+                staleFor(n)?.let { put("stale", it) }
             }
         }
     }
 
     private fun sourceJson(s: SourceReader.Source) = buildJsonObject {
-        put("file", relative(s.file)); put("startLine", s.startLine)
+        put("file", relative(s.file)); put("startLine", s.startLine); put("endLine", s.startLine + s.text.lines().size - 1)
         if (s.decompiled) put("decompiled", true)
         put("text", s.text)
     }
 
-    fun readSource(id: String, contextLines: Int = 0): JsonObject {
-        val n = resolve(id) ?: return error("no node '$id'")
+    /** The source of one node; [lines] (file line numbers) continues a body that was cut, without re-reading its start. */
+    fun readSource(id: String, contextLines: Int = 0, lines: IntRange? = null): JsonObject {
+        val all = resolveAll(id)
+        ambiguous(id, all)?.let { return it }
+        val n = all.firstOrNull() ?: return error("no node '$id'")
         val id = n.id
         memory?.log("source", id)
         val reader = sources ?: return error("source reading is not available in this server")
-        val s = reader.read(n, contextLines) ?: return error("no readable source for '$id' (${n.origin.name.lowercase()}); decompiling is limited to internal jars")
-        return buildJsonObject { put("id", id); sourceJson(s).forEach { (k, v) -> put(k, v) } }
+        val whole = reader.read(n, contextLines) ?: return error("no readable source for '$id' (${n.origin.name.lowercase()}); decompiling is limited to internal jars")
+        val s = lines?.let { r ->
+            val ls = whole.text.lines()
+            val from = (r.first - whole.startLine).coerceIn(0, ls.size)
+            val to = (r.last - whole.startLine + 1).coerceIn(from, ls.size)
+            SourceReader.Source(whole.file, whole.startLine + from, ls.subList(from, to).joinToString("\n"), whole.decompiled)
+        } ?: whole
+        return buildJsonObject { put("id", id); sourceJson(s).forEach { (k, v) -> put(k, v) }; staleFor(n)?.let { put("stale", it) } }
+    }
+
+    /**
+     * Several bodies in one call, within one budget, so the follow-up to an answer is one turn and not one per id.
+     * What did not fit is listed as `pending`, whole ids, so the next call is exact; an error or a candidates list
+     * is small and always returned.
+     */
+    fun readSources(ids: List<String>, budget: Int = DEFAULT_BUDGET): JsonObject {
+        var left = budget * 4
+        val done = ArrayList<JsonObject>()
+        val pending = ArrayList<String>()
+        for (id in ids) {
+            val r = readSource(id)
+            val text = r["text"]?.jsonPrimitive?.content
+            when {
+                text == null -> done += r
+                text.length <= left -> { done += r; left -= text.length }
+                left > 400 -> { done += JsonObject(r + mapOf("text" to JsonPrimitive(text.take(left).substringBeforeLast('\n')), "truncated" to JsonPrimitive(true))); left = 0 }
+                else -> pending += id
+            }
+        }
+        return buildJsonObject { put("sources", JsonArray(done)); if (pending.isNotEmpty()) put("pending", buildJsonArray { for (p in pending) add(JsonPrimitive(p)) }) }
     }
 
     // ---- graph walks ---------------------------------------------------------------------------
@@ -723,7 +777,7 @@ class Queries(
                             val steps = f.attrs["steps"]?.let { json.parseToJsonElement(it).jsonArray } ?: JsonArray(emptyList())
                             val shown = when {
                                 packedBodies && i > 0 -> emptyList()
-                                packedBodies -> steps.toList().filter { it.jsonObject["id"]!!.jsonPrimitive.content !in packed }.cap(minOf(6, l))
+                                packedBodies -> steps.toList().filter { s -> s.jsonObject["id"]!!.jsonPrimitive.content.let { it !in packed && packable(it) } }.cap(minOf(6, l)) // the steps worth following, not the DTO builders the walk met
                                 else -> steps.toList().cap(if (i == 0) l else maxOf(3, l / 2)) // later flows shrink first
                             }
                             put("stepCount", steps.size)

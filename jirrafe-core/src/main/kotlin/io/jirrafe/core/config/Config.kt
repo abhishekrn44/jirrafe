@@ -69,7 +69,7 @@ class Config private constructor(private val values: Map<String, String>, privat
             |
             |[serve]
             |transport = "stdio"                   # stdio | http
-            |default_token_budget = 5000
+            |default_token_budget = 3000
             |""".trimMargin()
     }
 }

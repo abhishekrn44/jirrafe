@@ -7,8 +7,10 @@ asks "how does X work", "what calls Y" or "what breaks if I change Z" and gets t
 classes and methods, their callers and their source, every one cited as `file:line`, in a few
 calls instead of a grep session.
 
-**76% fewer tokens per question** than grepping for the same answer, in one or two tool calls
-instead of a dozen, measured on repositories the model had not memorised ([What to expect](#what-to-expect)).
+**Half the tool calls, a third fewer tokens, half the cost per question** against the same
+model with grep and file reads, with the same or better answers, measured live on repositories the
+model had not memorised; and a small model with the graph reaches the facts a large one reaches by
+reading ([What to expect](#what-to-expect)).
 
 Requirements: JDK 17 or 21; the project builds with Gradle 7.6+ or Maven 3.9. Kotlin modules are
 indexed from bytecode.
@@ -76,7 +78,7 @@ helper", "how do I pause a subscription"); `/jirrafe <question>` forces it. Open
 4. `jirrafe query impact --diff` after editing, before committing: the working tree's changed lines
    mapped to the members they fall in, what those affect, and the test command for exactly that.
 
-Every answer honours a token budget (default 5000) and shrinks its lists to fit. An answer carries
+Every answer honours a token budget (default 3000) and shrinks its lists to fit. An answer carries
 `stale` when sources moved since the build, naming the files whose cited lines may be off. The ids
 an agent fetched after a question are remembered locally, so the next time the same question is
 asked they come first, body included.
@@ -162,37 +164,46 @@ answers are the same and only the calls and time are saved.
 
 ## What to expect
 
-Measured the same way throughout: a fixed question set per repository with the classes and methods
-a correct answer must reach, an offline retrieval benchmark against a grep baseline that greps up to
-three keywords and reads the first matching files the way an agent without a graph works, and live
-A/B runs of Claude Code with the skill installed against a clean clone with only Read, Grep and
-Glob, on repositories the model could not describe from memory.
+Every number here comes from live A/B runs: the same questions put to Claude Code with the jirrafe
+skill and to a clean clone with only Read, Grep and Glob, the same model on both sides, on
+repositories the model could not describe from memory (open-source libraries and small enterprise
+Spring services), scored on whether the answer reached the classes and methods a correct answer
+must name. Five questions per repository, so treat every figure as a direction, not a decimal.
 
-- **On code the model does not know**, the skill answers every question, grep misses about one in
-  eight, and the skill takes half the tool calls, a quarter less wall time and a fifth less money.
-- **Offline**, one `explain` call reaches the answer for four questions in five at about two
-  thousand tokens; the grep baseline needs eleven to fourteen calls and eight thousand tokens for
-  half the answers. Averaged over the benchmark repositories that is **76% fewer tokens per
-  question** at the default budget, and 86% fewer at a 1500-token budget, where recall is still
-  within a few points.
-- **Unprompted**, the skill loads on every question shape tested ("how is", "where is", "find the
-  code that", "which class", "what calls") without being invoked.
-- **Docs**, for "how do I use X" questions on a project with real usage documentation: the graph
-  answers seven in ten; grep over the source finds none.
-- **Internal jars**, on a project carrying two mostly unused libraries: cutting them to what the
-  code reaches shrank the graph by a third and raised recall six points.
+- **Answers.** With the graph the agent reached the right code on every repository at least as
+  often as without it, and on a third of them more often. Where grep missed, it was usually
+  configuration: a key in `application.properties`, a `@Configuration` class, a filter the code
+  never calls.
+- **Turns.** Tool calls per question fell by half or more on every repository (roughly two to
+  three instead of four to six), and about half of all questions were answered in a single call.
+  Turns are what an agent's session costs in time, and what some assistants bill.
+- **Tokens and cost.** About a third fewer tokens read per question and about half the cost,
+  against the same model with grep. The saving is mostly the file reads that no longer happen.
+- **Smaller models answer like larger ones.** The same held for a small, a mid-size and a large
+  model (Haiku, Sonnet, Opus): calls fell 55-75% at every size, and the recall the graph reached
+  was set by the repository, not the model; the three models scored the same on each repository
+  once the graph was there. The smallest model with the graph reached the same facts as the largest
+  model with grep on two of three repositories, one question behind on the third, at roughly a
+  tenth of the price, and cited about twice as many locations per answer at the same accuracy.
+  The graph changes what a model finds; a larger model still explains it better.
+- **Unprompted.** The skill loaded on its own for every question shape tested ("how is", "where
+  is", "find the code that", "which class", "what calls").
+- **Docs.** For "how do I use X" questions on a project with real usage documentation, the graph
+  answered seven in ten; grep over the source found none.
+- **Internal jars.** On a project carrying two mostly unused libraries, cutting them to what the
+  code reaches shrank the graph by a third and raised recall.
 - **Against a general-purpose knowledge graph** (graphify) on the same repository and questions:
-  the same recall at a third of the calls and a third of the tokens, because calls are resolved by
-  the compiler and the answer carries the method body instead of a node list.
+  the same recall at a third of the calls and a third of the tokens.
 
-The shape to expect: the graph pays for itself on code the model has not memorised, which is the
-internal-jar, enterprise case it was built for. On a tiny, well-named repository grep also gets
-everything right; the win there is calls and time, not answers. Run `jirrafe bench` on your own
-project with your own questions: copy `jirrafe-fixtures/benchmark/TEMPLATE.json`, replace each
+Two honest limits of the measurement: recall means the answer named the right code with the right
+citations, not that its explanation was good; and the cost of a session depends on prompt caching,
+so compare configurations on the same day, as these were.
+
+Run it on your own project: copy `jirrafe-fixtures/benchmark/TEMPLATE.json`, replace each
 `question` with one of yours and each `expected` entry with the node ids a correct answer must
 reach (a class, a `Class#method(param.Types)`, `route:GET /path`, `topic:name`, `config:key`,
 `bean:name` or `flow:<handler id>`; `a|b` counts if either is found), then run
-`jirrafe bench --questions <file>`.
+`jirrafe bench --questions <file>` for the offline retrieval check.
 
 See `docs/worked-example.md` for a real, unedited answer to "what is the auth mechanism in this
 code?" in two calls.

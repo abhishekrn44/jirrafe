@@ -11,6 +11,7 @@ import io.modelcontextprotocol.kotlin.sdk.types.TextContent
 import io.modelcontextprotocol.kotlin.sdk.types.TextResourceContents
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -37,7 +38,8 @@ class McpServerTest {
     private suspend fun Client.call(tool: String, vararg args: Pair<String, Any?>) =
         callTool(tool, args.toMap()).let { r ->
             assertTrue(r.isError != true, "$tool failed: ${(r.content.first() as TextContent).text}")
-            Json.parseToJsonElement((r.content.first() as TextContent).text).jsonObject
+            // explain and read_source send a model numbered code as text; every tool's JSON is the structured content
+            (r.structuredContent as? JsonObject) ?: Json.parseToJsonElement((r.content.first() as TextContent).text).jsonObject
         }
 
     @Test

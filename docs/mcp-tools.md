@@ -9,7 +9,7 @@ rebuilds; run `jirrafe build` to refresh the graph.
 
 Every answer is compact JSON. Code nodes carry `at` (`file:line` relative to the project root), edges
 carry `resolution` when it is not `exact` and `confidence` when it is below 1. Every tool takes
-`token_budget` (default 5000, from `[serve] default_token_budget`); answers shrink their lists until
+`token_budget` (default 3000, from `[serve] default_token_budget`); answers shrink their lists until
 they fit. Tool errors (unknown id, no such flow) come back inside the result with `isError`, so the
 agent can correct itself.
 
@@ -45,7 +45,7 @@ last time is not needed this time.
 |---|---|---|
 | `search` | `query`, `kinds` (comma-separated), `limit` | BM25 over names, signatures and docs with prefix matching; id-substring fallback |
 | `get_node` | `id`, `include_source` | attributes, doc, module, community, layer, annotations, members as an outline (line, signature, annotations; a member's id is the class id + `#` + the signature's `name(params)`, simple type names accepted), outgoing and incoming edges, flows it is a step of, findings; source when asked (decompiled lazily for internal jars) |
-| `read_source` | `id`, `context_lines` | the exact lines of a node; `decompiled: true` marks Vineflower output |
+| `read_source` | `id` (one, or several comma-separated), `lines`, `context_lines` | the exact lines of a node with `startLine`/`endLine`; several ids come back as `sources` within one budget with what did not fit named in `pending`; `lines: "A-B"` continues a body that was cut; a bare `Class#member` matching several overloads returns `candidates` instead of a guess; `decompiled: true` marks Vineflower output; `stale` when the file changed since the build |
 
 ## Structure
 

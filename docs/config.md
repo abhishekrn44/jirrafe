@@ -24,7 +24,7 @@ send_code_snippets = false            # when true, the entry method's source and
 
 [serve]
 transport = "stdio"                   # stdio | http
-default_token_budget = 5000
+default_token_budget = 3000
 ```
 
 ## Where the values come from

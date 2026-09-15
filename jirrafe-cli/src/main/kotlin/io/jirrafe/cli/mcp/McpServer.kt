@@ -63,8 +63,12 @@ class McpServer(
         }
         tool("get_node", "A node with its attributes, doc, community, layer, edges, flows and findings; optionally its source.",
             listOf(id, Param("include_source", "boolean", "include the source text (decompiles internal jars lazily)"), budget)) { a -> queries.getNode(a.str("id"), a.bool("include_source"), a.budget()) }
-        tool("read_source", "Exact source lines of a node; decompiled output is marked as such.",
-            listOf(id, Param("context_lines", "integer", "lines before and after (default 0)"))) { a -> queries.readSource(a.str("id"), a.int("context_lines", 0)) }
+        tool("read_source", "Exact source lines of a node, or of several nodes in one call; decompiled output is marked as such. A bare member name matching several overloads returns the candidates.",
+            listOf(Param("id", "string", "node id, or several separated by commas", required = true), Param("lines", "string", "file lines A-B of the node, to continue a body that was cut"), Param("context_lines", "integer", "lines before and after (default 0)"), budget)) { a ->
+            val ids = a.str("id").split(',').map { it.trim() }.filter { it.isNotEmpty() }
+            val range = a.strOrNull("lines")?.let { l -> l.substringBefore('-').trim().toIntOrNull()?.let { from -> from..(l.substringAfter('-').trim().toIntOrNull() ?: Int.MAX_VALUE) } }
+            if (ids.size > 1) queries.readSources(ids, a.budget()) else queries.readSource(ids.firstOrNull() ?: "", a.int("context_lines", 0), range)
+        }
         tool("neighbors", "Nodes and edges around a node.",
             listOf(id, Param("direction", "string", "in | out | both (default both)"), Param("edge_types", "string", "comma-separated edge kinds, e.g. calls,injects"), Param("depth", "integer", "1-4 (default 1)"), Param("resolution_min", "number", "drop edges below this confidence"), budget)) { a ->
             queries.neighbors(a.str("id"), a.str("direction", "both"), a.edgeKinds(), a.int("depth", 1), a.num("resolution_min", 0.0), a.budget())
@@ -98,6 +102,13 @@ class McpServer(
         }
     }
 
+    /** The text a model reads: numbered code for explain and read_source, JSON for the rest; the JSON is always the structured content. */
+    private fun text(name: String, result: JsonObject): String = when (name) {
+        "explain" -> io.jirrafe.core.query.Render.explain(result)
+        "read_source" -> io.jirrafe.core.query.Render.sources(result)
+        else -> Queries.json.encodeToString(JsonElement.serializer(), result)
+    }
+
     private fun tool(name: String, description: String, params: List<Param>, handler: (JsonObject) -> JsonObject) {
         val schema = ToolSchema(
             properties = buildJsonObject { for (p in params) put(p.name, buildJsonObject { put("type", p.type); put("description", p.description) }) },
@@ -107,7 +118,7 @@ class McpServer(
             val args = request.params.arguments ?: JsonObject(emptyMap())
             try {
                 val result = handler(args)
-                CallToolResult(listOf(TextContent(Queries.json.encodeToString(JsonElement.serializer(), result))), isError = result.containsKey("error"), structuredContent = result)
+                CallToolResult(listOf(TextContent(text(name, result))), isError = result.containsKey("error"), structuredContent = result)
             } catch (e: Exception) {
                 CallToolResult(listOf(TextContent("error: ${e.message ?: e.toString()}")), isError = true)
             }

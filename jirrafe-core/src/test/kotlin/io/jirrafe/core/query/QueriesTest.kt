@@ -6,6 +6,7 @@ import io.jirrafe.core.model.NodeKind
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonPrimitive
 import kotlin.test.Test
 import kotlin.test.assertContains
@@ -18,6 +19,7 @@ class QueriesTest {
         override fun read(node: Node, contextLines: Int) = SourceReader.Source(node.file!!, node.startLine ?: 1, "// source of ${node.id}", decompiled = false)
     }
     private val q = Queries(store, "/repo", null, reader)
+    private val char34 = '"'.toString()
 
     private fun JsonObject.str(k: String) = this[k]!!.jsonPrimitive.content
     private fun JsonObject.ids(k: String) = this[k]!!.jsonArray.map { it.jsonObject.str("id") }
@@ -54,6 +56,35 @@ class QueriesTest {
         assertEquals(10, open["line"]!!.jsonPrimitive.content.toInt())
         assertEquals("a.Main#main(java.lang.String[])", q.getNode("a.Main#main(String[])").str("id"), "outline names resolve to the exact member")
         assertContains(q.getNode("nope").str("error"), "no node")
+    }
+
+    @Test
+    fun `source reads one body, a line range of it, or several bodies in one call`() {
+        val one = q.readSource("a.OrderService#open")
+        assertEquals("a.OrderService#open()", one.str("id"), "a bare member name resolves when it is not ambiguous")
+        assertEquals(10, one["startLine"]!!.jsonPrimitive.int)
+        assertEquals(10, one["endLine"]!!.jsonPrimitive.int)
+        val cut = q.readSource("a.OrderService#open()", lines = 11..20)
+        assertEquals("", cut.str("text"), "a range past the body's end is empty, not the whole body again")
+        val batch = q.readSources(listOf("a.OrderService#open()", "b.Util1#f()", "a.Nope#x()"))
+        assertEquals(listOf("a.OrderService#open()", "b.Util1#f()"), batch["sources"]!!.jsonArray.filter { it.jsonObject.containsKey("text") }.map { it.jsonObject.str("id") })
+        assertTrue(batch["sources"]!!.jsonArray.any { it.jsonObject.containsKey("error") }, "an unknown id is reported in place")
+        val tight = q.readSources(listOf("a.OrderService#open()", "b.Util1#f()"), budget = 10)
+        assertEquals(1, tight["sources"]!!.jsonArray.size)
+        assertEquals(listOf("b.Util1#f()"), tight["pending"]!!.jsonArray.map { it.jsonPrimitive.content }, "what did not fit is named, so the next call is exact")
+    }
+
+    @Test
+    fun `the rendered answer is numbered code under a file header, and a batch keeps its pending list`() {
+        val text = Render.explain(q.explain("how are orders listed?"))
+        assertTrue(text.startsWith("# how are orders listed?"))
+        assertTrue(text.contains("## code"), "bodies come as code")
+        assertTrue(Regex("### src/a/\\S+\\.java:\\d+-\\d+  a\\.").containsMatchIn(text), "each body is headed file:start-end and id")
+        assertTrue(Regex("(?m)^ *10  // source of a\\.").containsMatchIn(text), "lines are numbered from the body's start line")
+        assertTrue(!text.contains(char34 + "text" + char34), "no JSON in the rendered answer")
+        val batch = Render.sources(q.readSources(listOf("a.OrderService#open()", "b.Util1#f()"), budget = 10))
+        assertTrue(batch.contains("### src/a/OrderService.java:10-10  a.OrderService#open()"))
+        assertTrue(batch.contains("pending (did not fit; ask for them next): b.Util1#f()"))
     }
 
     @Test

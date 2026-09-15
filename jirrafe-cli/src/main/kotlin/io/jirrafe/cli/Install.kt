@@ -102,7 +102,9 @@ object Install {
         fun c(shell: String, mcp: String) = if (cli != null) shell else mcp
         val explain = c("`$cli query explain \"<the question in plain words>\"`", "`explain(question)`")
         val node = c("`$cli query node <id>`", "`get_node(id)`")
-        val source = c("`$cli query source <id> --token-budget 1500`", "`read_source(id)` with a small `token_budget`")
+        val source = c("`$cli query source <id>`", "`read_source(id)`")
+        val sources = c("`$cli query source <id> <id> <id>`", "`read_source` with the ids comma-separated")
+        val more = c("`--lines A-B`", "`lines: A-B`")
         val impact = c("`$cli query impact <id>`", "`impact(id)`")
         val diff = c("`$cli query impact --diff`", "`impact_of_changes`")
         val build = c("`$cli build`", "`jirrafe build` in a shell")
@@ -120,14 +122,18 @@ object Install {
         |   the current file before quoting a line from one of them. When `stale` lists more than a few files, or
         |   the question is about one of them, run $index first (incremental, seconds) and ask again.
         |2. Start with the question itself: $explain
-        |   The answer carries `pack`: whole method bodies along the chains from the best matches, entry point
-        |   first, each with `at: file:line` and the ids it `calls`; `data`, the entities and DTOs those bodies move,
-        |   as field lists; `config`, the keys they read, with values; then the flows and the other nodes that
-        |   matched. Answer from `pack`, `data` and `config`; they are the reading you would otherwise do file by file.
-        |3. Read more only for something the answer does not contain. $node gives one node with its callers and callees (cheap); $source
-        |   gives the source alone, cut to the budget, including classes inside internal jars, which are
-        |   decompiled on demand. Read a method (`Class#method(...)`), not its whole class. Never fetch
-        |   the same id twice (node then source); pick one. Ids are pasted verbatim from the answers.
+        |   The answer is the reading itself: under `## code`, the method bodies along the chain from the entry
+        |   point, each headed `### file:start-end  id` with every line numbered, followed by the ids it calls;
+        |   then `## data` (the entities and DTOs those bodies move, as field lists), `## config` (the keys they
+        |   read, with values), `## flows` and `## other matches`. Cite `file:line` straight from the numbered
+        |   lines. The code shown is the source; do not fetch a body that is already under `## code`.
+        |3. Fetch more only in three cases, and in one call: a body that ends with `... cut at line N` continues
+        |   with $more; ids listed as `pending`; an id the answer names but does not show. $sources returns
+        |   several bodies at once. $node gives one node with its callers and callees. Classes inside internal
+        |   jars are decompiled on demand. Read a method (`Class#method(...)`), not its whole class. Ids are
+        |   pasted verbatim; a bare `Class#method` that matches several overloads returns candidates, pick one.
+        |   When the question names a method or class whose id you already know, go straight to $source,
+        |   $node or $impact; the question itself is for finding what you do not know.
         |4. Before recommending a change, and for "what calls X" or "who uses X": $impact
         |   lists every caller with its `file:line`, grouped by community and flow, and the tests to run.
         |   That list is complete; do not grep to confirm it. Only a reflective or config-driven use

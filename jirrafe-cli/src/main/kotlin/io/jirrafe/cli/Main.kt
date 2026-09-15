@@ -7,7 +7,9 @@ import com.github.ajalt.clikt.core.context
 import com.github.ajalt.clikt.core.main
 import com.github.ajalt.clikt.core.subcommands
 import com.github.ajalt.clikt.parameters.arguments.argument
+import com.github.ajalt.clikt.parameters.arguments.multiple
 import com.github.ajalt.clikt.parameters.arguments.optional
+import com.github.ajalt.clikt.parameters.options.convert
 import com.github.ajalt.clikt.parameters.options.default
 import com.github.ajalt.clikt.parameters.options.flag
 import com.github.ajalt.clikt.parameters.options.option
@@ -366,7 +368,7 @@ class Query : CoreCliktCommand(name = "query") {
         |  jirrafe query explain "how is an order placed"     flows, communities and nodes with file:line
         |  jirrafe query search OrderService                   nodes by name, signature or Javadoc
         |  jirrafe query node <id> [--source]                  one node with edges (and its source)
-        |  jirrafe query source <id> [--token-budget N]        the source text of a node, cut to the budget
+        |  jirrafe query source <id> [<id>...] [--lines A-B]  the source of one node, or several in one call; --lines continues a cut body
         |  jirrafe query impact <id> [--depth N]               callers affected by a change, and their tests
         |  jirrafe query impact --diff                         the same for the working tree's changes, with the test command
         |  jirrafe query flow <id-or-route>                    one end-to-end flow
@@ -377,12 +379,15 @@ class Query : CoreCliktCommand(name = "query") {
 
     private val dir by dirOption()
     private val tool by argument(help = "explain | search | node | source | impact | flow | neighbors | routes | topics | beans | config | findings | communities | dependencies | overview")
-    private val text by argument(help = "question, id or filter").optional()
-    private val budget by option("--token-budget", help = "answer size in tokens (default from jirrafe.toml or 5000)").int()
+    private val texts by argument(help = "question, id or filter; source takes several ids").multiple()
+    private val text get() = texts.firstOrNull()
+    private val lines by option("--lines", help = "source: file lines A-B of the node, to continue a body that was cut").convert { it.substringBefore('-').trim().toInt()..it.substringAfter('-').trim().toInt() }
+    private val budget by option("--token-budget", help = "answer size in tokens (default from jirrafe.toml or 3000)").int()
     private val source by option("--source", help = "node: include the source text").flag()
     private val depth by option("--depth", help = "impact and neighbors depth").int()
     private val diff by option("--diff", help = "impact: the working tree's changes against HEAD instead of an id, ending in the test command").flag()
     private val licenses by option("--i-understand-licenses", help = "allow decompiling public jars").flag()
+    private val format by option("--format", help = "explain and source: text (numbered code an agent cites from, the default) or json").default("text")
 
     override fun run() {
         val root = dir.toAbsolutePath().normalize()
@@ -401,7 +406,7 @@ class Query : CoreCliktCommand(name = "query") {
                 "explain" -> q.explain(need(), b)
                 "search" -> q.search(need(), budget = b)
                 "node" -> q.getNode(need(), source, b)
-                "source" -> q.readSource(need(), 0).let { r -> // the largest live token sink had no budget at all
+                "source" -> if (texts.size > 1) q.readSources(texts, b) else q.readSource(need(), 0, lines).let { r -> // the largest live token sink had no budget at all
                     val t = r["text"]?.let { it as? kotlinx.serialization.json.JsonPrimitive }?.content
                     if (t == null || t.length <= b * 4) r
                     else kotlinx.serialization.json.JsonObject(r + mapOf("text" to kotlinx.serialization.json.JsonPrimitive(t.take(b * 4).substringBeforeLast('\n')), "truncated" to kotlinx.serialization.json.JsonPrimitive(true)))
@@ -419,7 +424,14 @@ class Query : CoreCliktCommand(name = "query") {
                 "overview" -> q.overview(b)
                 else -> throw CliktError("unknown query `$tool`")
             }
-            echo(Queries.json.encodeToString(kotlinx.serialization.json.JsonObject.serializer(), result))
+            // the answer an agent reads is code with line numbers, not code inside JSON strings; JSON on request
+            val text = when {
+                format == "json" -> null
+                tool == "explain" -> io.jirrafe.core.query.Render.explain(result)
+                tool == "source" -> io.jirrafe.core.query.Render.sources(result)
+                else -> null
+            }
+            echo(text ?: Queries.json.encodeToString(kotlinx.serialization.json.JsonObject.serializer(), result))
         }
     }
 }
@@ -429,7 +441,7 @@ class Bench : CoreCliktCommand(name = "bench") {
     private val dir: Path by dirOption()
     private val questions: Path by option("--questions", help = "JSON list of {question, expected: [node ids]}").path().required()
     private val output: Path? by option("--output", help = "write the Markdown here as well").path()
-    private val budget: Int by option("--token-budget", help = "answer budget passed to explain and search (default 5000)").int().default(Queries.DEFAULT_BUDGET)
+    private val budget: Int by option("--token-budget", help = "answer budget passed to explain and search (default 3000)").int().default(Queries.DEFAULT_BUDGET)
 
     override fun run() {
         val root = dir.toAbsolutePath().normalize()

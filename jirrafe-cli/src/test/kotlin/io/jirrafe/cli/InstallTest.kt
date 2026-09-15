@@ -70,7 +70,7 @@ class InstallTest {
         val c = Config.parse(Config.template("gradle", "com.acme"))
         assertEquals("gradle", c.string("project.build_tool", "?"))
         assertEquals(listOf("com.acme"), c.list("deps.internal_group_prefixes"))
-        assertEquals(5000, c.int("serve.default_token_budget", 0))
+        assertEquals(3000, c.int("serve.default_token_budget", 0))
         assertEquals(false, c.bool("knowledge.send_code_snippets", true))
         assertEquals("internal-only", c.string("deps.decompile", "?"))
 
