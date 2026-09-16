@@ -45,6 +45,7 @@ object Render {
         section(o["config"], "config") { c -> "- " + c.str("key") + (c["value"]?.let { " = " + it.jsonPrimitive.content } ?: "") + (c["at"]?.let { "  @ " + it.jsonPrimitive.content } ?: "") }
         section(o["wiring"], "wiring (framework declarations that apply; complete for the annotations listed)") { w -> "- " + w.str("declares") + "  " + w.str("id") + (w["at"]?.let { "  @ " + it.jsonPrimitive.content } ?: "") }
         o["dependencies"]?.jsonArray?.takeIf { it.isNotEmpty() }?.let { d -> appendLine(); appendLine("dependencies: " + d.joinToString(", ") { it.jsonPrimitive.content }) }
+        o["vocabulary"]?.jsonArray?.takeIf { it.isNotEmpty() }?.let { v -> appendLine(); appendLine("vocabulary (the code's own words nearest this question; ask again with the ones that fit): " + v.joinToString(", ") { it.jsonPrimitive.content }) }
         section(o["nodes"], if (pack.isNotEmpty()) "other matches" else "matches") { n ->
             "- " + n.str("id") + (n["at"]?.let { "  @ " + it.jsonPrimitive.content } ?: "") + (n["signature"]?.let { "  " + it.jsonPrimitive.content } ?: "") +
                 (n["doc"]?.let { "  ; " + it.jsonPrimitive.content } ?: "") +

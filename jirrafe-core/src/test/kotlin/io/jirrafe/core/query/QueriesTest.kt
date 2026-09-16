@@ -88,6 +88,14 @@ class QueriesTest {
     }
 
     @Test
+    fun `a question in the wrong words gets the code's nearest words back`() {
+        val e = q.explain("what happens on openings of things?") // "openings" is not the code's word; "open" is
+        val vocab = e["vocabulary"]?.jsonArray?.map { it.jsonPrimitive.content }.orEmpty()
+        assertTrue((e["pack"]?.jsonArray?.isNotEmpty() == true) || "open" in vocab, "either the code was found or its nearest word is offered: $vocab")
+        assertTrue(vocab.all { it.length >= 3 && it == it.lowercase() }, "vocabulary holds only real identifier pieces")
+    }
+
+    @Test
     fun `neighbors, path and impact walk the graph`() {
         val n = q.neighbors("a.OrderService#open()", depth = 2)
         assertContains(n.ids("nodes"), "b.ReportService#run()")

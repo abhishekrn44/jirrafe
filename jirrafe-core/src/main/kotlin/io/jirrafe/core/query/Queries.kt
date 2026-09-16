@@ -878,6 +878,8 @@ class Queries(
                     for ((site, text) in wiringSites.cap(maxOf(4, l))) add(buildJsonObject { put("id", site.id); at(site)?.let { put("at", it) }; put("declares", text) })
                 })
                 if (l >= 5 && dependencies.isNotEmpty()) put("dependencies", buildJsonArray { for (d in dependencies) add(JsonPrimitive(d)) })
+                // a thin answer says which of the code's own words are near the question, so the next ask lands
+                if (pack.isEmpty() || hits.size < 3) nearbyVocabulary(words + stems).takeIf { it.isNotEmpty() }?.let { v -> put("vocabulary", buildJsonArray { for (t in v) add(JsonPrimitive(t)) }) }
                 // the other matches: with bodies packed, a few names and lines for the agent to choose to follow; the
                 // edge lists that were the follow-up ids before the bodies were here are now the bodies' own `calls`
                 put("nodes", buildJsonArray {
@@ -945,6 +947,29 @@ class Queries(
             current = next
         }
         return if (steps.size > 1) steps else emptyList()
+    }
+
+    /** The graph's own words, once per process: the camelCase pieces of every repo class, member, route and config key. */
+    private val vocabulary: Map<String, Int> by lazy {
+        val counts = HashMap<String, Int>()
+        for (k in listOf(NodeKind.CLASS, NodeKind.INTERFACE, NodeKind.ENUM, NodeKind.RECORD, NodeKind.METHOD, NodeKind.FIELD, NodeKind.CONFIG_KEY, NodeKind.HTTP_ROUTE)) for (n in store.nodes(k)) {
+            if (n.origin == Origin.EXTERNAL) continue
+            val name = if (k == NodeKind.CONFIG_KEY || k == NodeKind.HTTP_ROUTE) n.fqn else n.id.substringAfterLast('.').substringAfterLast('$').substringAfter('#').substringBefore('(')
+            for (t in name.split(Regex("""[^\p{Alnum}]+|(?<=[a-z0-9])(?=[A-Z])""")).map { it.lowercase() }) if (t.length in 3..30) counts.merge(t, 1, Int::plus)
+        }
+        counts
+    }
+
+    /**
+     * For a question the code's words did not match ("database connection" against `datasource`, "created" against
+     * `saveRequest`): the identifiers nearest the question's words, so the agent can ask again in the code's own
+     * vocabulary instead of guessing a synonym. Drawn from the graph only; nothing invented.
+     */
+    private fun nearbyVocabulary(words: List<String>): List<String> {
+        val want = words.map { it.lowercase() }.filter { it.length >= 3 }
+        return vocabulary.entries
+            .filter { (t, _) -> want.any { w -> t != w && (t.startsWith(w.take(4)) || w.startsWith(t.take(4)) || (w.length >= 5 && t.contains(w.take(5)))) } }
+            .sortedByDescending { it.value }.map { it.key }.take(20)
     }
 
     /** `@PreAuthorize(hasRole('ADMIN'))`: one annotation on a node with its values, as it reads in the source. */

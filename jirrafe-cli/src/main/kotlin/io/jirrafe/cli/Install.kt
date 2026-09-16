@@ -81,9 +81,35 @@ object Install {
     const val DESCRIPTION = "Use for any question about this Java (or Kotlin) project's code before grepping or reading files - how something works, is done, verified, created, sent or configured; where it happens; what calls it; what breaks if it changes. Answers come from a precomputed code graph (repo plus internal jars, README and docs) with file:line citations in one or two calls, including request flows, Spring wiring, configuration keys, \"how do I use X\" from the project's own docs, and the impact of a change."
 
     /** The instructions section for a client that calls the MCP tools; `agents-md` gets the CLI form. */
-    fun instructions(client: String, cli: String? = null): String =
-        "## jirrafe code graph\n\n$DESCRIPTION\n\n" + body(cli) +
-            "\nThe graph is not rebuilt by $client; run `jirrafe build` after large changes.\n"
+    /** Always-on text for a client without on-demand skills: short, an order first, then the triggers; the procedure lives in the skill. */
+    fun instructions(client: String, cli: String? = null): String {
+        fun c(shell: String, mcp: String) = if (cli != null) shell else mcp
+        val explain = c("`$cli query explain \"<the question>\"`", "`explain(question)`")
+        val source = c("`$cli query source <id> [<id> ...]`", "`read_source(id)` (several ids comma-separated)")
+        val impact = c("`$cli query impact <id>`", "`impact(id)`")
+        val diff = c("`$cli query impact --diff`", "`impact_of_changes`")
+        val index = c("`$cli index`", "`jirrafe index` in a shell")
+        return """
+        |## jirrafe code graph
+        |
+        |For any question about how this Java or Kotlin project's code works - how something is done, verified,
+        |created, sent or configured; where it happens; what calls it; what breaks if it changes - your first
+        |action is $explain. It returns the method bodies along the chain from the entry point with every
+        |line numbered, the entities and config keys they use, and the framework wiring that applies (security,
+        |caching, transactions, error handling), each cited `file:line`. Most questions end there.
+        |
+        |Triggers: "how is/does ...", "where is ...", "what calls ...", "which class/endpoint/key ...", "how do I ...",
+        |"add/modify/fix <something>", anything that depends on how classes relate.
+        |
+        |Then, only when needed: $source for a body the answer names but does not show; $impact before changing a
+        |method or for "what calls X" (the caller list is complete; do not grep to confirm it); $diff after editing,
+        |for the tests to run. If the answer has no code but lists `vocabulary`, ask again with those words.
+        |
+        |Answer from what the commands returned and cite its numbered lines; do not fetch a body already shown;
+        |where the answer is silent, say so rather than fill it in. Read source files only for something the graph
+        |did not return. When an answer says `stale`, run $index first. The graph is not rebuilt by $client.
+        |""".trimMargin()
+    }
 
     fun skill(command: String): String =
         "---\nname: jirrafe\ndescription: $DESCRIPTION\nallowed-tools: Bash($command:*)\n---\n\n" + body(command)
@@ -115,7 +141,7 @@ object Install {
             "`routes`, `beans`, `config`, `topics`, `findings`, `flow`, `neighbors`, `search`, `overview`")
         return """
         |This project has a jirrafe code graph in `.jirrafe/` covering the repository and its internal jars.
-        |Every answer is JSON with `file:line` citations.$root
+        |Every answer is text with `file:line` citations (`--format json` for JSON).$root
         |
         |1. The graph is `.jirrafe/graph.db` and is already built; do not check for it. If an answer says it is missing, run $build (about a minute).
         |   An answer carrying `stale` predates edits to the files it lists: their cited lines may be off, so read
@@ -131,7 +157,9 @@ object Install {
         |   Each body says which class it lives in and how that class is annotated. Explain the mechanism end
         |   to end: entry point, service logic, data access, and the wiring that enforces it. Cite `file:line`
         |   straight from the numbered lines. The code shown is the source; do not fetch a body that is already
-        |   under `## code`.
+        |   under `## code`. If there is no `## code` and a `vocabulary` line, the question's words are not the
+        |   code's: ask again with the listed words that fit. Answer only from what the commands returned; where
+        |   they are silent, say so rather than fill it in.
         |3. Fetch more only in three cases, and in one call: a body that ends with `... cut at line N` continues
         |   with $more; ids listed as `pending`; an id the answer names but does not show. $sources returns
         |   several bodies at once. $node gives one node with its callers and callees. Classes inside internal
