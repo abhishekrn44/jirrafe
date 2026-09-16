@@ -49,6 +49,27 @@ class Queries(
         private const val DATA_CLASSES = 4
         private const val DATA_FIELDS = 20
         private const val CONFIG_KEYS = 8
+        /**
+         * What a framework declares rather than calls, by concept: the annotations that mark it, the bean types
+         * that configure it, the artifacts that ship it. A question naming the concept, or a packed body carrying
+         * one of its annotations, brings the whole family into the answer; Spring calls these, the code does not,
+         * so no call chain reaches them.
+         */
+        private class Family(val words: List<String>, val annotations: List<String>, val beanTypes: List<String>, val artifacts: List<String>)
+        private val FAMILIES = listOf(
+            Family(listOf("secur", "auth", "login", "signin", "token", "jwt", "permission", "role", "admin", "password", "credential"),
+                listOf("EnableWebSecurity", "EnableMethodSecurity", "EnableGlobalMethodSecurity", "PreAuthorize", "PostAuthorize", "Secured", "RolesAllowed"),
+                listOf("SecurityFilterChain", "UserDetailsService", "AuthenticationManager", "AuthenticationProvider", "PasswordEncoder", "AuthenticationEntryPoint", "OncePerRequestFilter"),
+                listOf("security", "jjwt", "oauth")),
+            Family(listOf("cach", "ehcache", "redis"), listOf("EnableCaching", "Cacheable", "CacheEvict", "CachePut", "Caching"), listOf("CacheManager"), listOf("cache", "ehcache", "jcache", "redis")),
+            Family(listOf("error", "exception", "fail"), listOf("ControllerAdvice", "RestControllerAdvice", "ExceptionHandler", "ResponseStatus"), emptyList(), emptyList()),
+            Family(listOf("transaction"), listOf("Transactional", "EnableTransactionManagement"), listOf("PlatformTransactionManager"), emptyList()),
+            Family(listOf("schedul", "cron", "job", "async"), listOf("Scheduled", "EnableScheduling", "Async", "EnableAsync"), listOf("TaskScheduler"), emptyList()),
+            Family(listOf("valid"), listOf("Valid", "Validated"), emptyList(), listOf("validation")),
+            Family(listOf("event", "startup", "preload", "listener", "boot"), listOf("EventListener", "PostConstruct"), listOf("CommandLineRunner", "ApplicationRunner", "ApplicationListener"), emptyList()),
+            Family(listOf("cors", "intercept", "mvc"), listOf("CrossOrigin"), listOf("WebMvcConfigurer", "HandlerInterceptor"), emptyList()),
+        )
+        private const val WIRING_SITES = 12
         private const val NEAR_MISS = 0.5 // a second match scoring this fraction of the first gets its own chain; new tokens cost twelve times re-read ones
         /** Where a request goes next, by the knowledge layer's classification of the target's class. */
         private val LAYER_RANK = mapOf("controller" to 0, "service" to 0, "repository" to 0, "client" to 0, "util" to 2, "config" to 2, "model" to 3)
@@ -592,7 +613,7 @@ class Queries(
         // weight a hit by its kind and by how much depends on its class (inDegree from the knowledge layer)
         val weight = HashMap<String, Double>()
         fun weight(n: Node): Double = weight.getOrPut(n.id) {
-            val kind = when (n.kind) { NodeKind.FIELD -> 0.5; NodeKind.CONSTRUCTOR -> 0.3; NodeKind.FILE, NodeKind.PACKAGE -> 0.2; NodeKind.DOC -> 0.7; else -> 1.0 } // prose helps, code answers
+            val kind = when (n.kind) { NodeKind.FIELD -> 0.5; NodeKind.CONSTRUCTOR -> 0.6; NodeKind.FILE, NodeKind.PACKAGE -> 0.2; NodeKind.DOC -> 0.7; else -> 1.0 } // prose helps, code answers
             val cls = if (n.kind in CODE) n else store.node(owner(n.id))
             val inDegree = cls?.attrs?.get("inDegree")?.toIntOrNull() ?: 0
             kind * (1.0 + kotlin.math.log10(1.0 + inDegree) / 2)
@@ -650,7 +671,7 @@ class Queries(
             remembered.forEachIndexed { i, id -> if (store.node(id) != null) hits.merge(id, top * (2.0 - i * 0.5), Double::plus) }
             mem.log("explain", question)
         }
-        val nodes = hits.keys.mapNotNull { store.node(it) }.associateBy { it.id }
+        val nodes = hits.keys.mapNotNull { store.node(it) }.associateBy { it.id }.toMutableMap()
 
         val flows = LinkedHashMap<String, Double>()
         val communities = LinkedHashMap<String, Double>()
@@ -692,14 +713,25 @@ class Queries(
         // context fifty times the size of this answer. So the answer is the reading itself: the bodies along the
         // chain from the entry point through the best match and on to the boundary, in order, cited. That is what
         // the agent would have assembled over five turns, and what only the graph knows how to order.
-        fun leadable(n: Node) = n.kind in setOf(NodeKind.METHOD, NodeKind.CONSTRUCTOR) && n.origin != Origin.EXTERNAL && n.attrs["test"] != "true"
+        // a one-line body (an empty constructor, a trivial getter) has nothing to explain and never leads
+        fun leadable(n: Node) = n.kind in setOf(NodeKind.METHOD, NodeKind.CONSTRUCTOR) && n.origin != Origin.EXTERNAL && n.attrs["test"] != "true" &&
+            ((n.endLine ?: 0) - (n.startLine ?: 0) >= 1 || store.node(owner(n.id))?.kind == NodeKind.INTERFACE)
         // a nested class (a Lombok builder, an inner helper) takes its enclosing class's layer
         fun layerRank(id: String) = LAYER_RANK[(store.node(owner(id))?.attrs?.get("layer") ?: store.node(owner(id).substringBefore('$'))?.attrs?.get("layer"))] ?: 1
         // The best few distinct matches, logic layers first: a generated builder or a DTO getter matches the question's
         // words as well as the service does. On a small application the second and third candidates are as often the
         // answer as the first ("how is a user created": the request and the approval both create one), and reading both
         // costs less than one more turn.
-        val candidates = listOf(0, 2, 3).flatMap { rank -> codeHits.filter { e -> nodes[e.key]?.let { leadable(it) && it.attrs["generated"] != "true" && (LAYER_RANK[store.node(owner(it.id))?.attrs?.get("layer")] ?: 1) <= rank } == true } }
+        // a class the question names ("the client", "the filter") is explained by what its constructor sets up: the
+        // constructor's name is `<init>` and matches no word, so it stands in for the class with the class's score
+        for (e in codeHits.filter { nodes[it.key]?.kind in CODE }.take(3)) {
+            store.edgesFrom(e.key, EdgeKind.CONTAINS).map { it.to }.filter { it.contains("#<init>") }.mapNotNull { store.node(it) }
+                .filter { leadable(it) && it !in nodes.values }.maxByOrNull { (it.endLine ?: 0) - (it.startLine ?: 0) }
+                ?.let { ctor -> hits[ctor.id] = e.value; (nodes as MutableMap)[ctor.id] = ctor }
+        }
+        val leadHits = hits.entries.filter { nodes[it.key]?.kind !in setOf(NodeKind.FLOW, NodeKind.COMMUNITY, NodeKind.PACKAGE, NodeKind.FILE) }
+            .sortedByDescending { if (nodes[it.key]?.attrs?.get("test") == "true") it.value * 0.3 else it.value }
+        val candidates = listOf(0, 2, 3).flatMap { rank -> leadHits.filter { e -> nodes[e.key]?.let { leadable(it) && it.attrs["generated"] != "true" && (LAYER_RANK[store.node(owner(it.id))?.attrs?.get("layer")] ?: 1) <= rank } == true } }
             .map { it.key }.distinct() // logic layers, then config and util, then the rest; a generated method never leads
         val lead = candidates.firstOrNull()
         // A library has no route, consumer or job, so nothing precomputes a flow and the agent walks the call chain
@@ -727,7 +759,32 @@ class Queries(
         if (spine.size > PACK_MAX) spine.subList(PACK_MAX, spine.size).clear()
         // Whole bodies. A cut at thirty lines was an invitation to fetch the rest, and that turn costs more than the
         // whole method does; only something longer than a screen and a half is the agent's own call to read.
-        val pack = spine.mapNotNull { id -> nodes[id] ?: store.node(id) }.mapNotNull { n ->
+        // the families in play: named by the question, or declared on what the chain packs
+        val onSpine = (spine + spine.map { owner(it) }).distinct().mapNotNull { store.node(it) }.flatMap { Attrs.annotations(it).keys }.map { it.substringAfterLast('.') }.toSet()
+        val asked = FAMILIES.filter { f -> stems.any { s -> f.words.any { w -> s.lowercase().startsWith(w) } } }
+        val families = FAMILIES.filter { f -> f in asked || f.annotations.any { it in onSpine } }
+        val spineIds = (spine + spine.map { owner(it) }).toSet()
+        val wiring = ArrayList<Pair<Node, String>>() // site, its annotation text
+        val wiringBodies = ArrayList<String>() // the bean methods that configure the concept, packed like chain steps
+        for (f in families) {
+            for (ann in f.annotations) for (a in store.nodesLike(ann, 20).filter { it.id.endsWith(".$ann") }) {
+                for (e in store.edgesTo(a.id, EdgeKind.ANNOTATED_WITH)) store.node(e.from)?.takeIf { it.origin == Origin.REPO && it.attrs["test"] != "true" }?.let { site ->
+                    // the question named the concept: every site. Only the chain did: the chain's own sites and the @Enable* that switches it on
+                    if (f in asked || site.id in spineIds || ann.startsWith("Enable")) wiring += site to annotationText(site, a.id)
+                }
+            }
+            for (b in store.nodes(NodeKind.BEAN)) {
+                val type = b.attrs["type"]?.substringAfterLast('.') ?: continue
+                if (type !in f.beanTypes) continue
+                val provider = b.attrs["provider"] ?: continue
+                if ('#' in provider) wiringBodies += provider // a @Bean method: its body is the configuration
+                else store.node(provider)?.let { c -> wiring += c to (type + " bean") }
+            }
+        }
+        val dependencies = manifest?.modules.orEmpty().flatMap { m -> m.configurations.flatMap { it.artifacts } }.filter { a -> families.any { f -> f.artifacts.any { w -> (a.name ?: "").contains(w, ignoreCase = true) } } }
+            .map { "${it.group}:${it.name}:${it.version}" }.distinct().sortedBy { if ("starter" in it) 0 else 1 }.take(5)
+        val wiringSites = wiring.distinctBy { it.first.id }.sortedBy { it.first.file + ":" + it.first.startLine }.take(WIRING_SITES)
+        val pack = (spine + wiringBodies.filter { it !in spine }.take(2)).mapNotNull { id -> nodes[id] ?: store.node(id) }.mapNotNull { n ->
             sources?.read(n, 0)?.let { s ->
                 // tabs and a method's own indentation are escape sequences in JSON and tokens in a context; neither says anything
                 val raw = s.text.lines().dropWhile { it.isBlank() }.map { it.replace("\t", "  ").trimEnd() }
@@ -799,6 +856,7 @@ class Queries(
                 if (bodies.isNotEmpty()) put("pack", buildJsonArray {
                     for (p in bodies) add(buildJsonObject {
                         put("id", p.id); put("at", "${relative(p.source.file)}:${p.source.startLine}")
+                        classHeader(p.id)?.let { put("class", it) } // the declaration the body lives in: its annotations and supertypes
                         if (p.source.decompiled) put("decompiled", true)
                         val callers = cleanEdges(p.id, store.edgesTo(p.id)) { it.from }.size
                         if (callers > 0) put("callers", callers)
@@ -815,6 +873,11 @@ class Queries(
                 if (l >= 5 && configKeys.isNotEmpty()) put("config", buildJsonArray {
                     for (k in configKeys) add(buildJsonObject { put("key", k.fqn); k.attrs["value"]?.let { put("value", it) }; at(k)?.let { put("at", it) } })
                 })
+                // complete for the annotations named: the graph knows every site, which is what lets an agent stop looking
+                if (l >= 5 && wiringSites.isNotEmpty()) put("wiring", buildJsonArray {
+                    for ((site, text) in wiringSites.cap(maxOf(4, l))) add(buildJsonObject { put("id", site.id); at(site)?.let { put("at", it) }; put("declares", text) })
+                })
+                if (l >= 5 && dependencies.isNotEmpty()) put("dependencies", buildJsonArray { for (d in dependencies) add(JsonPrimitive(d)) })
                 // the other matches: with bodies packed, a few names and lines for the agent to choose to follow; the
                 // edge lists that were the follow-up ids before the bodies were here are now the bodies' own `calls`
                 put("nodes", buildJsonArray {
@@ -882,6 +945,25 @@ class Queries(
             current = next
         }
         return if (steps.size > 1) steps else emptyList()
+    }
+
+    /** `@PreAuthorize(hasRole('ADMIN'))`: one annotation on a node with its values, as it reads in the source. */
+    private fun annotationText(n: Node, annotation: String): String {
+        val values = Attrs.annotations(n)[annotation].orEmpty()
+        val name = "@" + annotation.substringAfterLast('.')
+        return when {
+            values.isEmpty() -> name
+            values.keys == setOf("value") -> name + "(" + values["value"] + ")"
+            else -> name + values.entries.joinToString(", ", "(", ")") { (k, v) -> "$k=$v" }
+        }
+    }
+
+    /** `@Service class LoginServiceImpl implements LoginService`: the class a member lives in, as declared. */
+    private fun classHeader(id: String): String? {
+        val c = store.node(owner(id).substringBefore('$')) ?: return null
+        val annotations = Attrs.annotations(c).keys.filter { !it.startsWith("java.lang.") && !it.startsWith("lombok.") }.joinToString(" ") { annotationText(c, it) }
+        val decl = (c.signature ?: c.id.substringAfterLast('.')).replace(PACKAGE, "")
+        return listOf(annotations, decl).filter { it.isNotEmpty() }.joinToString(" ").takeIf { it.isNotEmpty() }
     }
 
     /** The first sentence of a Javadoc, markup stripped, at most 200 characters and never cut mid-word. */

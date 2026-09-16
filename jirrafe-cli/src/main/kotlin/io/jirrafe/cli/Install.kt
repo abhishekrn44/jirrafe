@@ -125,8 +125,13 @@ object Install {
         |   The answer is the reading itself: under `## code`, the method bodies along the chain from the entry
         |   point, each headed `### file:start-end  id` with every line numbered, followed by the ids it calls;
         |   then `## data` (the entities and DTOs those bodies move, as field lists), `## config` (the keys they
-        |   read, with values), `## flows` and `## other matches`. Cite `file:line` straight from the numbered
-        |   lines. The code shown is the source; do not fetch a body that is already under `## code`.
+        |   read, with values), `## wiring` (the framework declarations that apply: security rules and filters,
+        |   cache, transaction and exception-handling configuration, with their values, locations and the
+        |   dependency that ships them; complete for the annotations listed), `## flows` and `## other matches`.
+        |   Each body says which class it lives in and how that class is annotated. Explain the mechanism end
+        |   to end: entry point, service logic, data access, and the wiring that enforces it. Cite `file:line`
+        |   straight from the numbered lines. The code shown is the source; do not fetch a body that is already
+        |   under `## code`.
         |3. Fetch more only in three cases, and in one call: a body that ends with `... cut at line N` continues
         |   with $more; ids listed as `pending`; an id the answer names but does not show. $sources returns
         |   several bodies at once. $node gives one node with its callers and callees. Classes inside internal

@@ -43,6 +43,8 @@ object Render {
         }
         section(o["data"], "data") { d -> "- " + d.str("id").substringAfterLast('.') + " { " + d.str("fields") + " }" + (d["table"]?.let { "  table " + it.jsonPrimitive.content } ?: "") + (d["at"]?.let { "  @ " + it.jsonPrimitive.content } ?: "") }
         section(o["config"], "config") { c -> "- " + c.str("key") + (c["value"]?.let { " = " + it.jsonPrimitive.content } ?: "") + (c["at"]?.let { "  @ " + it.jsonPrimitive.content } ?: "") }
+        section(o["wiring"], "wiring (framework declarations that apply; complete for the annotations listed)") { w -> "- " + w.str("declares") + "  " + w.str("id") + (w["at"]?.let { "  @ " + it.jsonPrimitive.content } ?: "") }
+        o["dependencies"]?.jsonArray?.takeIf { it.isNotEmpty() }?.let { d -> appendLine(); appendLine("dependencies: " + d.joinToString(", ") { it.jsonPrimitive.content }) }
         section(o["nodes"], if (pack.isNotEmpty()) "other matches" else "matches") { n ->
             "- " + n.str("id") + (n["at"]?.let { "  @ " + it.jsonPrimitive.content } ?: "") + (n["signature"]?.let { "  " + it.jsonPrimitive.content } ?: "") +
                 (n["doc"]?.let { "  ; " + it.jsonPrimitive.content } ?: "") +
@@ -76,6 +78,7 @@ object Render {
         p["callers"]?.let { append("  callers ").append(it.jsonPrimitive.content) }
         if (p["decompiled"] != null) append("  (decompiled)")
         appendLine()
+        p["class"]?.let { appendLine("in " + it.jsonPrimitive.content) }
         val width = end.toString().length
         for ((i, l) in lines.withIndex()) appendLine((start + i).toString().padStart(width) + "  " + l)
         if (p["truncated"] != null) appendLine("... cut at line $end; `source ${p.str("id")} --lines ${end + 1}-${end + 120}` continues it")
