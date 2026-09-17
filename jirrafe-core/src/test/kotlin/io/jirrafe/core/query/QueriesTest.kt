@@ -96,6 +96,16 @@ class QueriesTest {
     }
 
     @Test
+    fun `a packed body carries its class's fields once`() {
+        val e = q.explain("how are orders listed?")
+        val pack = e["pack"]!!.jsonArray.map { it.jsonObject }
+        val withFields = pack.filter { it.containsKey("fields") }
+        assertTrue(withFields.all { p -> pack.first { owner(it.str("id")) == owner(p.str("id")) } === p }, "fields ride on the first body of each class only")
+    }
+
+    private fun owner(id: String) = id.substringBefore('#').substringBefore('$')
+
+    @Test
     fun `neighbors, path and impact walk the graph`() {
         val n = q.neighbors("a.OrderService#open()", depth = 2)
         assertContains(n.ids("nodes"), "b.ReportService#run()")

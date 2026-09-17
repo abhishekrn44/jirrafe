@@ -70,6 +70,9 @@ class Queries(
             Family(listOf("cors", "intercept", "mvc"), listOf("CrossOrigin"), listOf("WebMvcConfigurer", "HandlerInterceptor"), emptyList()),
         )
         private const val WIRING_SITES = 12
+        private const val FIELDS_MAX = 12
+        private const val WHOLE_FILE_TOKENS = 700L // a file this size costs less whole than the same facts as fragments
+        private const val CARD_MEMBERS = 30
         private const val NEAR_MISS = 0.5 // a second match scoring this fraction of the first gets its own chain; new tokens cost twelve times re-read ones
         /** Where a request goes next, by the knowledge layer's classification of the target's class. */
         private val LAYER_RANK = mapOf("controller" to 0, "service" to 0, "repository" to 0, "client" to 0, "util" to 2, "config" to 2, "model" to 3)
@@ -668,7 +671,8 @@ class Queries(
         memory?.let { mem ->
             val remembered = mem.recall(terms(question), ::terms)
             val top = hits.values.maxOrNull() ?: 1.0
-            remembered.forEachIndexed { i, id -> if (store.node(id) != null) hits.merge(id, top * (2.0 - i * 0.5), Double::plus) }
+            // just under the best match, never above it: what was read last time is a candidate, not the answer to this question
+            remembered.forEachIndexed { i, id -> if (store.node(id) != null) hits.merge(id, top * (0.9 - i * 0.1), Double::plus) }
             mem.log("explain", question)
         }
         val nodes = hits.keys.mapNotNull { store.node(it) }.associateBy { it.id }.toMutableMap()
@@ -740,7 +744,8 @@ class Queries(
         val bestFlowSteps = rankedFlows.firstOrNull()?.let { store.node(it.key) }?.attrs?.get("steps")
             ?.let { s -> json.parseToJsonElement(s).jsonArray.map { it.jsonObject["id"]!!.jsonPrimitive.content } }.orEmpty()
         // a walk carries logic, not a DTO's getters or a generated builder: their shape is in `data`
-        fun packable(id: String) = store.node(id)?.let { it.origin != Origin.EXTERNAL && it.file != null && it.attrs["generated"] != "true" && layerRank(id) < 3 } == true
+        val named = { id: String -> stems.any { s -> id.substringAfterLast('.').substringAfterLast('$').substringBefore('(').lowercase().contains(s.lowercase()) } }
+        fun packable(id: String) = store.node(id)?.let { it.origin != Origin.EXTERNAL && it.file != null && it.attrs["generated"] != "true" && (layerRank(id) < 2 || named(id)) } == true
         fun walk(from: String, steps: Int): List<String> = when (from) {
             // the precomputed flow already resolved dispatch and ordered the walk: the entry, then the flow from the match on
             // (a stable sort by layer, so the service and repository steps come before the helpers the walk met first)
@@ -784,7 +789,18 @@ class Queries(
         val dependencies = manifest?.modules.orEmpty().flatMap { m -> m.configurations.flatMap { it.artifacts } }.filter { a -> families.any { f -> f.artifacts.any { w -> (a.name ?: "").contains(w, ignoreCase = true) } } }
             .map { "${it.group}:${it.name}:${it.version}" }.distinct().sortedBy { if ("starter" in it) 0 else 1 }.take(5)
         val wiringSites = wiring.distinctBy { it.first.id }.sortedBy { it.first.file + ":" + it.first.startLine }.take(WIRING_SITES)
-        val pack = (spine + wiringBodies.filter { it !in spine }.take(2)).mapNotNull { id -> nodes[id] ?: store.node(id) }.mapNotNull { n ->
+        // Where the answer lives decides what to send. Nine questions in ten are answered inside one or two files.
+        // A small file read whole is cheaper than the same facts cut into fragments, and it reads in the order it
+        // was written; a large one never is. So: the whole file when it is small, its card when it is not, and the
+        // chain of bodies only when the answer is genuinely spread.
+        val spineFiles = spine.mapNotNull { store.node(it)?.file }.distinct()
+        val concentrated = spineFiles.size in 1..2 && wiringBodies.none { it !in spine }
+        val fileTokens = spineFiles.associateWith { f -> runCatching { java.nio.file.Files.size(java.nio.file.Path.of(f)) / 4 }.getOrDefault(Long.MAX_VALUE) }
+        val whole = if (concentrated) spineFiles.filter { (fileTokens[it] ?: Long.MAX_VALUE) <= WHOLE_FILE_TOKENS } else emptyList()
+        val cards = if (concentrated) spineFiles.filter { it !in whole } else emptyList()
+        val pack = (spine + wiringBodies.filter { it !in spine }.take(2)).mapNotNull { id -> nodes[id] ?: store.node(id) }
+            .filter { n -> n.file == null || (n.file !in whole && n.file !in cards) } // its file is already going, whole or as a card
+            .mapNotNull { n ->
             sources?.read(n, 0)?.let { s ->
                 // tabs and a method's own indentation are escape sequences in JSON and tokens in a context; neither says anything
                 val raw = s.text.lines().dropWhile { it.isBlank() }.map { it.replace("\t", "  ").trimEnd() }
@@ -794,6 +810,20 @@ class Queries(
             }
         }
         val packed = pack.map { it.id }.toHashSet()
+        // the file as the agent would have read it: cheaper than fragments below the threshold, and coherent
+        val wholeFiles = whole.mapNotNull { f ->
+            val text = runCatching { java.nio.file.Files.readString(java.nio.file.Path.of(f)) }.getOrNull() ?: return@mapNotNull null
+            Triple(relative(f), text.replace("\t", "  ").lines(), spine.filter { store.node(it)?.file == f })
+        }
+        // a large file as its shape: what it declares, where each member starts, and only the bodies that matched
+        val cardFiles = cards.mapNotNull { f ->
+            val cls = spine.firstOrNull { store.node(it)?.file == f }?.let { store.node(owner(it).substringBefore('$')) } ?: return@mapNotNull null
+            val members = store.edgesFrom(cls.id, EdgeKind.CONTAINS).mapNotNull { store.node(it.to) }
+                .filter { it.kind == NodeKind.METHOD || it.kind == NodeKind.CONSTRUCTOR }
+                .sortedBy { it.startLine ?: Int.MAX_VALUE }
+                .map { "${it.startLine ?: 0} ${shortName(it)}" }
+            Triple(cls, members.take(CARD_MEMBERS), spine.filter { store.node(it)?.file == f })
+        }
         // The data the chain moves, as a field list each: on a CRUD service the entities and DTOs are the domain, and
         // "what does it return" is answered by a shape, not a body. Types the packed classes use, model layer only,
         // the ones named in the packed code first.
@@ -857,6 +887,8 @@ class Queries(
                     for (p in bodies) add(buildJsonObject {
                         put("id", p.id); put("at", "${relative(p.source.file)}:${p.source.startLine}")
                         classHeader(p.id)?.let { put("class", it) } // the declaration the body lives in: its annotations and supertypes
+                        val cls = owner(p.id).substringBefore('$')
+                        if (l >= 5 && bodies.firstOrNull { owner(it.id).substringBefore('$') == cls } === p) fieldsOf(cls, bodies.filter { owner(it.id).substringBefore('$') == cls }.joinToString("\n") { it.text }).takeIf { it.isNotEmpty() }?.let { fs -> put("fields", buildJsonArray { for (f in fs) add(JsonPrimitive(f)) }) }
                         if (p.source.decompiled) put("decompiled", true)
                         val callers = cleanEdges(p.id, store.edgesTo(p.id)) { it.from }.size
                         if (callers > 0) put("callers", callers)
@@ -865,6 +897,24 @@ class Queries(
                             .filter { e -> e.to !in packed && store.node(e.to)?.origin != Origin.EXTERNAL }
                         if (l >= 10 && calls.isNotEmpty()) put("calls", buildJsonArray { for (e in calls.cap(8)) add(JsonPrimitive(e.to)) })
                         put("text", p.text); if (p.truncated) put("truncated", true)
+                    })
+                })
+                if (wholeFiles.isNotEmpty()) put("files", buildJsonArray {
+                    for ((path, lines, matched) in wholeFiles) add(buildJsonObject {
+                        put("path", path); put("lines", lines.size)
+                        put("answers", buildJsonArray { for (m in matched) add(JsonPrimitive(m)) })
+                        put("text", lines.joinToString("\n"))
+                    })
+                })
+                if (cardFiles.isNotEmpty()) put("cards", buildJsonArray {
+                    for ((cls, members, matched) in cardFiles) add(buildJsonObject {
+                        put("id", cls.id); at(cls)?.let { put("at", it) }
+                        classHeader(cls.id + "#")?.let { put("class", it) }
+                        fieldsOf(cls.id, matched.mapNotNull { id -> nodes[id]?.let { sources?.read(it, 0)?.text } }.joinToString("\n")).takeIf { it.isNotEmpty() }
+                            ?.let { fs -> put("fields", buildJsonArray { for (x in fs) add(JsonPrimitive(x)) }) }
+                        put("members", buildJsonArray { for (m in members) add(JsonPrimitive(m)) })
+                        put("bodies", buildJsonArray { for (m in matched) { val n = nodes[m] ?: store.node(m); val s = n?.let { sources?.read(it, 0) }
+                            if (n != null && s != null) add(buildJsonObject { put("id", n.id); put("at", "${relative(s.file)}:${s.startLine}"); put("text", s.text.replace("\t", "  ").lines().take(PACK_LINES).joinToString("\n")) }) } })
                     })
                 })
                 if (l >= 5 && data.isNotEmpty()) put("data", buildJsonArray {
@@ -989,6 +1039,28 @@ class Queries(
         val annotations = Attrs.annotations(c).keys.filter { !it.startsWith("java.lang.") && !it.startsWith("lombok.") }.joinToString(" ") { annotationText(c, it) }
         val decl = (c.signature ?: c.id.substringAfterLast('.')).replace(PACKAGE, "")
         return listOf(annotations, decl).filter { it.isNotEmpty() }.joinToString(" ").takeIf { it.isNotEmpty() }
+    }
+
+    /**
+     * What a class holds, as declared: `@Autowired private UserRepo userRepo`, `private final Argon2PasswordEncoder
+     * encoder = new Argon2PasswordEncoder(SALT, HASH_LENGTH, ...)`. A method body uses these by name; the encoder
+     * it was built with, the repository it was given, live here and nowhere a body shows. Read from the source
+     * when a reader is at hand (the initialiser is the fact), the signature otherwise; constants and loggers left out.
+     */
+    private fun fieldsOf(classId: String, usedIn: String): List<String> {
+        val c = store.node(classId) ?: return emptyList()
+        if (c.kind !in CODE || c.origin == Origin.EXTERNAL) return emptyList()
+        val fields = store.edgesFrom(classId, EdgeKind.CONTAINS).mapNotNull { store.node(it.to) }
+            .filter { it.kind == NodeKind.FIELD && it.attrs["generated"] != "true" }
+            .filter { f -> val sig = f.signature.orEmpty(); !("static" in sig && "final" in sig) && !sig.contains("Logger") && !f.id.endsWith("#class") }
+            .filter { f -> Regex("\\b" + Regex.escape(f.id.substringAfterLast('#')) + "\\b").containsMatchIn(usedIn) } // only what the shown bodies use
+            .sortedBy { it.startLine ?: Int.MAX_VALUE }
+        return fields.take(FIELDS_MAX).map { f ->
+            val ann = Attrs.annotations(f).keys.filter { !it.startsWith("java.lang.") && !it.startsWith("lombok.") }.joinToString(" ") { annotationText(f, it) }
+            val text = sources?.read(f, 0)?.text?.lines()?.map { it.trim() }?.filter { it.isNotEmpty() && !it.startsWith("@") }?.joinToString(" ")?.trimEnd(';')?.take(200)
+                ?: f.signature?.replace(PACKAGE, "") ?: f.id.substringAfterLast('#')
+            listOf(ann, text).filter { it.isNotEmpty() }.joinToString(" ")
+        }
     }
 
     /** The first sentence of a Javadoc, markup stripped, at most 200 characters and never cut mid-word. */

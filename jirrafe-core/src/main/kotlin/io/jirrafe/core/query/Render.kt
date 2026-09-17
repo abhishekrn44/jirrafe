@@ -33,6 +33,20 @@ object Render {
                 for (s in f["steps"]?.jsonArray.orEmpty().map { it.jsonObject }) appendLine("  - " + s.str("id") + (s["at"]?.let { "  @ " + it.jsonPrimitive.content } ?: ""))
             }
         }
+        for (f in o["files"]?.jsonArray.orEmpty().map { it.jsonObject }) {
+            appendLine(); appendLine("## " + f.str("path") + "  (whole file, " + f.str("lines") + " lines)")
+            f["answers"]?.jsonArray?.takeIf { it.isNotEmpty() }?.let { a -> appendLine("answers here: " + a.joinToString(", ") { it.jsonPrimitive.content }) }
+            appendLine()
+            val width = f.str("lines").length
+            for ((i, l) in f.str("text").lines().withIndex()) appendLine((i + 1).toString().padStart(width) + "  " + l)
+        }
+        for (c in o["cards"]?.jsonArray.orEmpty().map { it.jsonObject }) {
+            appendLine(); appendLine("## " + c.str("id") + "  @ " + c.str("at"))
+            c["class"]?.let { appendLine("in " + it.jsonPrimitive.content) }
+            c["fields"]?.jsonArray?.takeIf { it.isNotEmpty() }?.let { fs -> appendLine("fields: " + fs.joinToString("; ") { it.jsonPrimitive.content }) }
+            c["members"]?.jsonArray?.takeIf { it.isNotEmpty() }?.let { m -> appendLine("members (line name): " + m.joinToString(" · ") { it.jsonPrimitive.content }) }
+            for (b in c["bodies"]?.jsonArray.orEmpty().map { it.jsonObject }) { appendLine(); append(source(b)) }
+        }
         val pack = o["pack"]?.jsonArray.orEmpty()
         if (pack.isNotEmpty()) {
             appendLine(); appendLine("## code")
@@ -80,6 +94,7 @@ object Render {
         if (p["decompiled"] != null) append("  (decompiled)")
         appendLine()
         p["class"]?.let { appendLine("in " + it.jsonPrimitive.content) }
+        p["fields"]?.jsonArray?.takeIf { it.isNotEmpty() }?.let { fs -> appendLine("fields: " + fs.joinToString("; ") { it.jsonPrimitive.content }) }
         val width = end.toString().length
         for ((i, l) in lines.withIndex()) appendLine((start + i).toString().padStart(width) + "  " + l)
         if (p["truncated"] != null) appendLine("... cut at line $end; `source ${p.str("id")} --lines ${end + 1}-${end + 120}` continues it")

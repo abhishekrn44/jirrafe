@@ -154,8 +154,9 @@ object Install {
         |   read, with values), `## wiring` (the framework declarations that apply: security rules and filters,
         |   cache, transaction and exception-handling configuration, with their values, locations and the
         |   dependency that ships them; complete for the annotations listed), `## flows` and `## other matches`.
-        |   Each body says which class it lives in and how that class is annotated. Explain the mechanism end
-        |   to end: entry point, service logic, data access, and the wiring that enforces it. Cite `file:line`
+        |   Each body says which class it lives in, how that class is annotated, and its `fields` (the injected
+        |   repositories, the encoder or client it was built with). Explain the mechanism end to end: entry
+        |   point, service logic, data access, and the wiring that enforces it. Cite `file:line`
         |   straight from the numbered lines. The code shown is the source; do not fetch a body that is already
         |   under `## code`. If there is no `## code` and a `vocabulary` line, the question's words are not the
         |   code's: ask again with the listed words that fit. Answer only from what the commands returned; where
@@ -164,7 +165,8 @@ object Install {
         |   with $more; ids listed as `pending`; an id the answer names but does not show. $sources returns
         |   several bodies at once. $node gives one node with its callers and callees. Classes inside internal
         |   jars are decompiled on demand. Read a method (`Class#method(...)`), not its whole class. Ids are
-        |   pasted verbatim; a bare `Class#method` that matches several overloads returns candidates, pick one.
+        |   pasted verbatim from an answer; an id you have not seen in an answer is found with `search <name>`
+        |   first, never guessed. A bare `Class#method` matching several overloads returns candidates, pick one.
         |   When the question names a method or class whose id you already know, go straight to $source,
         |   $node or $impact; the question itself is for finding what you do not know.
         |4. Before recommending a change, and for "what calls X" or "who uses X": $impact

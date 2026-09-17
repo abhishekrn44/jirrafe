@@ -389,51 +389,40 @@ class Query : CoreCliktCommand(name = "query") {
     private val licenses by option("--i-understand-licenses", help = "allow decompiling public jars").flag()
     private val format by option("--format", help = "explain and source: text (numbered code an agent cites from, the default) or json").default("text")
 
+    private val noDaemon by option("--no-daemon", help = "answer in this process and leave no daemon behind").flag()
+
     override fun run() {
         val root = dir.toAbsolutePath().normalize()
         val out = root.resolve(".jirrafe")
         val db = out.resolve("graph.db")
         if (!db.exists()) throw CliktError("no graph at $db; run `jirrafe build` first")
-        val config = Config.load(root)
-        val manifest = out.resolve("manifest.json").takeIf { it.exists() }?.let { Manifest.read(it) }
-        val b = budget ?: config.int("serve.default_token_budget", Queries.DEFAULT_BUDGET)
         System.setOut(java.io.PrintStream(java.io.FileOutputStream(java.io.FileDescriptor.out), true, "UTF-8")) // Javadoc is not cp1252
-        GraphStore.open(db).use { store ->
-            val sources = Sources(out, manifest, allowPublic = licenses, decompile = config.string("deps.decompile", "internal-only") != "never")
-            val q = Queries(store, store.meta("root") ?: root.toString(), manifest, sources, Memory(out.resolve("queries.jsonl")))
-            fun need() = text ?: throw CliktError("`$tool` needs an argument")
-            val result = when (tool) {
-                "explain" -> q.explain(need(), b)
-                "search" -> q.search(need(), budget = b)
-                "node" -> q.getNode(need(), source, b)
-                "source" -> if (texts.size > 1) q.readSources(texts, b) else q.readSource(need(), 0, lines).let { r -> // the largest live token sink had no budget at all
-                    val t = r["text"]?.let { it as? kotlinx.serialization.json.JsonPrimitive }?.content
-                    if (t == null || t.length <= b * 4) r
-                    else kotlinx.serialization.json.JsonObject(r + mapOf("text" to kotlinx.serialization.json.JsonPrimitive(t.take(b * 4).substringBeforeLast('\n')), "truncated" to kotlinx.serialization.json.JsonPrimitive(true)))
-                }
-                "impact" -> if (diff) q.impactOfChanges(depth ?: 3, b) else q.impact(need(), depth ?: 3, b)
-                "flow" -> q.flow(need(), b)
-                "neighbors" -> q.neighbors(need(), "both", null, depth ?: 1, 0.0, b)
-                "routes" -> q.routes(text, b)
-                "topics" -> q.topics(b)
-                "beans" -> q.beans(text, b)
-                "config" -> q.config(text, b)
-                "findings" -> q.findings(text, null, null, b)
-                "communities" -> q.communities(text, b)
-                "dependencies" -> q.dependencies(text, b)
-                "overview" -> q.overview(b)
-                else -> throw CliktError("unknown query `$tool`")
-            }
-            // the answer an agent reads is code with line numbers, not code inside JSON strings; JSON on request
-            val text = when {
-                format == "json" -> null
-                tool == "explain" -> io.jirrafe.core.query.Render.explain(result)
-                tool == "source" -> io.jirrafe.core.query.Render.sources(result)
-                else -> null
-            }
-            echo(text ?: Queries.json.encodeToString(kotlinx.serialization.json.JsonObject.serializer(), result))
-        }
+        val request = Daemon.Request(tool, texts, budget, source, depth, diff, lines, format, licenses)
+        // a daemon holding the graph open answers in milliseconds; a fresh JVM takes two seconds before the graph is even open
+        val answer = (if (noDaemon) null else Daemon.ask(out, request))
+            ?: GraphStore.open(db).use { store -> Daemon.answer(root, out, store, request) }.also { if (!noDaemon) Daemon.spawn(root, launcher()) }
+        if (answer.error != null) throw CliktError(answer.error)
+        echo(answer.text)
     }
+
+    /** The command that started this process, for the daemon to be started the same way: the launcher script, else `java -jar`. */
+    private fun launcher(): List<String>? {
+        System.getenv("JIRRAFE_LAUNCHER")?.takeIf { it.isNotBlank() }?.let { return listOf(it) }
+        val jar = runCatching { java.nio.file.Path.of(Query::class.java.protectionDomain.codeSource.location.toURI()) }.getOrNull() ?: return null
+        val windows = System.getProperty("os.name").startsWith("Windows")
+        // an installDist layout: lib/jirrafe-cli.jar beside bin/jirrafe(.bat); otherwise the fat jar with the running JVM
+        val script = jar.parent?.takeIf { it.fileName.toString() == "lib" }?.parent?.resolve("bin")?.resolve(if (windows) "jirrafe.bat" else "jirrafe")
+        if (script != null && java.nio.file.Files.exists(script)) return listOf(script.toString())
+        val java = java.nio.file.Path.of(System.getProperty("java.home"), "bin", if (windows) "java.exe" else "java")
+        return if (jar.toString().endsWith(".jar")) listOf(java.toString(), "-jar", jar.toString()) else null
+    }
+}
+
+class DaemonCommand : CoreCliktCommand(name = "daemon") {
+    override fun help(context: Context) = "Holds the graph open and answers `jirrafe query` over localhost; started by the first query, exits after an idle hour. Hidden."
+    override val hiddenFromHelp = true
+    private val dir by dirOption()
+    override fun run() = Daemon.serve(dir.toAbsolutePath().normalize())
 }
 
 class Bench : CoreCliktCommand(name = "bench") {
@@ -455,4 +444,4 @@ class Bench : CoreCliktCommand(name = "bench") {
     }
 }
 
-fun main(args: Array<String>) = Jirrafe().subcommands(Init(), Resolve(), Index(), Knowledge(), Build(), Serve(), Query(), InstallCommand(), Watch(), PullCommand(), DiffCommand(), Bench()).main(args)
+fun main(args: Array<String>) = Jirrafe().subcommands(Init(), Resolve(), Index(), Knowledge(), Build(), Serve(), Query(), DaemonCommand(), InstallCommand(), Watch(), PullCommand(), DiffCommand(), Bench()).main(args)
