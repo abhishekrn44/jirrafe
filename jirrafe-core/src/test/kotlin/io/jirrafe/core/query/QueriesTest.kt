@@ -194,7 +194,8 @@ class QueriesTest {
     fun `explain returns flows, communities and cited nodes within budget`() {
         val e = q.explain("how are orders listed?")
         assertContains(e.ids("flows"), "flow:a.OrderController#list()")
-        assertTrue(e["communities"]!!.jsonArray.isNotEmpty())
+        assertTrue(e["communities"]!!.jsonArray.isEmpty(), "a community was cited in none of sixty-six answers; with bodies present it is not sent")
+        assertTrue(q.explain("zzz qqq")["communities"]!!.jsonArray.isNotEmpty() || q.explain("zzz qqq").containsKey("note"), "and rides when there is nothing else to say")
         val nodes = e["nodes"]!!.jsonArray.map { it.jsonObject }
         assertTrue(nodes.any { it.str("id").startsWith("a.Order") })
         assertTrue(nodes.filter { it.str("kind") in setOf("class", "method") }.all { it.containsKey("at") }, "every code node is cited")

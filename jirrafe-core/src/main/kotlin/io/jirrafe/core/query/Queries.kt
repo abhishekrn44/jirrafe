@@ -76,6 +76,8 @@ class Queries(
         private const val NEAR_MISS = 0.5 // a second match scoring this fraction of the first gets its own chain; new tokens cost twelve times re-read ones
         /** Where a request goes next, by the knowledge layer's classification of the target's class. */
         private val LAYER_RANK = mapOf("controller" to 0, "service" to 0, "repository" to 0, "client" to 0, "util" to 2, "config" to 2, "model" to 3)
+        /** What a lead is worth by its class's layer: a helper or an entity is rarely the answer, an unlabelled class often is. */
+        private val LAYER_WEIGHT = mapOf("util" to 0.7, "config" to 0.7, "model" to 0.4)
         /** A usage question, which prose may answer: "how do I", "why", "what is", "example", "documentation". */
         private val NON_DOC = NodeKind.values().toSet() - NodeKind.DOC
         private val USAGE = Regex("""\b(how (do|can|should|would) (i|we|you)|why|what is|what are|where (do|can) (i|we)|example|guide|documentation|readme|tutorial)\b""", RegexOption.IGNORE_CASE)
@@ -735,8 +737,13 @@ class Queries(
         }
         val leadHits = hits.entries.filter { nodes[it.key]?.kind !in setOf(NodeKind.FLOW, NodeKind.COMMUNITY, NodeKind.PACKAGE, NodeKind.FILE) }
             .sortedByDescending { if (nodes[it.key]?.attrs?.get("test") == "true") it.value * 0.3 else it.value }
-        val candidates = listOf(0, 2, 3).flatMap { rank -> leadHits.filter { e -> nodes[e.key]?.let { leadable(it) && it.attrs["generated"] != "true" && (LAYER_RANK[store.node(owner(it.id))?.attrs?.get("layer")] ?: 1) <= rank } == true } }
-            .map { it.key }.distinct() // logic layers, then config and util, then the rest; a generated method never leads
+        // The layer is a hint, not a gate. Walking the tiers meant any class Spring let us label `service` beat a
+        // far better match with no label at all, which is most of a library: mongo-spark's `filterDatabases` came
+        // first for "how are filters pushed down" while `MongoScanBuilder#pushFilters`, top of the search, was
+        // discarded. So the score decides, and the layer only holds helpers and data back.
+        val candidates = leadHits.filter { e -> nodes[e.key]?.let { leadable(it) && it.attrs["generated"] != "true" } == true }
+            .sortedByDescending { e -> e.value * (LAYER_WEIGHT[store.node(owner(e.key))?.attrs?.get("layer")] ?: 1.0) }
+            .map { it.key }.distinct()
         val lead = candidates.firstOrNull()
         // A library has no route, consumer or job, so nothing precomputes a flow and the agent walks the call chain
         // by reading files. Follow it here instead: the same shape, derived on the spot from the best match.
@@ -798,7 +805,9 @@ class Queries(
         val fileTokens = spineFiles.associateWith { f -> runCatching { java.nio.file.Files.size(java.nio.file.Path.of(f)) / 4 }.getOrDefault(Long.MAX_VALUE) }
         val whole = if (concentrated) spineFiles.filter { (fileTokens[it] ?: Long.MAX_VALUE) <= WHOLE_FILE_TOKENS } else emptyList()
         val cards = if (concentrated) spineFiles.filter { it !in whole } else emptyList()
-        val pack = (spine + wiringBodies.filter { it !in spine }.take(2)).mapNotNull { id -> nodes[id] ?: store.node(id) }
+        // a one-line delegation adds a header, a citation and a line of code to say what its caller already showed
+        val trivial = { id: String -> store.node(id)?.let { (it.endLine ?: 0) - (it.startLine ?: 0) <= 1 && it.id != lead } == true }
+        val pack = (spine.filterIndexed { i, id -> i == 0 || !trivial(id) } + wiringBodies.filter { it !in spine }.take(2)).mapNotNull { id -> nodes[id] ?: store.node(id) }
             .filter { n -> n.file == null || (n.file !in whole && n.file !in cards) } // its file is already going, whole or as a card
             .mapNotNull { n ->
             sources?.read(n, 0)?.let { s ->
@@ -857,7 +866,7 @@ class Queries(
                     // with bodies in the answer the flows are context, not the answer: the first one's steps beyond the
                     // pack, and the others by name only. Every step id is forty characters an agent re-reads every turn.
                     val packedBodies = pack.isNotEmpty()
-                    for ((i, entry) in rankedFlows.cap(if (packedBodies) 2 else maxOf(1, l / 4)).withIndex()) {
+                    for ((i, entry) in rankedFlows.cap(if (packedBodies) 1 else maxOf(1, l / 4)).withIndex()) {
                         val f = store.node(entry.key) ?: continue
                         add(buildJsonObject {
                             put("id", entry.key); put("entry", f.fqn); f.attrs["llmSummary"]?.let { put("summary", it) }
@@ -875,8 +884,9 @@ class Queries(
                         })
                     }
                 })
+                // communities were cited in none of sixty-six answers; they ride only when there is nothing else to say
                 put("communities", buildJsonArray {
-                    for ((id, _) in communities.entries.sortedByDescending { it.value }.cap(if (l >= 20) 2 else 1)) {
+                    for ((id, _) in (if (pack.isNotEmpty()) emptyList() else communities.entries.sortedByDescending { it.value }.cap(1))) {
                         val c = store.node(id) ?: continue
                         add(buildJsonObject { put("id", id); put("label", c.attrs["llmLabel"] ?: c.fqn); c.attrs["llmSummary"]?.let { put("summary", it) } })
                     }
@@ -893,9 +903,11 @@ class Queries(
                         val callers = cleanEdges(p.id, store.edgesTo(p.id)) { it.from }.size
                         if (callers > 0) put("callers", callers)
                         // what the body calls into the project, by id, so a repository query or a helper is named without a read
+                        // where the body goes next, by id, and only where it is not already shown: a written token costs
+                        // twelve re-read ones, so nothing is said twice
                         val calls = cleanEdges(p.id, store.edgesFrom(p.id).filter { it.kind == EdgeKind.CALLS || it.kind == EdgeKind.DISPATCHES_TO }) { it.to }
-                            .filter { e -> e.to !in packed && store.node(e.to)?.origin != Origin.EXTERNAL }
-                        if (l >= 10 && calls.isNotEmpty()) put("calls", buildJsonArray { for (e in calls.cap(8)) add(JsonPrimitive(e.to)) })
+                            .filter { e -> e.to !in packed && store.node(e.to)?.origin != Origin.EXTERNAL && layerRank(e.to) < 3 }
+                        if (l >= 10 && calls.isNotEmpty()) put("calls", buildJsonArray { for (e in calls.cap(4)) add(JsonPrimitive(e.to)) })
                         put("text", p.text); if (p.truncated) put("truncated", true)
                     })
                 })
