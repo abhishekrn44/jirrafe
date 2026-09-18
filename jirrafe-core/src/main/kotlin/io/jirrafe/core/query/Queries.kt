@@ -59,7 +59,9 @@ class Queries(
         private val FAMILIES = listOf(
             Family(listOf("secur", "auth", "login", "signin", "token", "jwt", "permission", "role", "admin", "password", "credential"),
                 listOf("EnableWebSecurity", "EnableMethodSecurity", "EnableGlobalMethodSecurity", "PreAuthorize", "PostAuthorize", "Secured", "RolesAllowed"),
-                listOf("SecurityFilterChain", "UserDetailsService", "AuthenticationManager", "AuthenticationProvider", "PasswordEncoder", "AuthenticationEntryPoint", "OncePerRequestFilter"),
+                // in the order they explain the concept: the chain declares the rules, the filter runs on every
+                // request, the details service loads the credentials; the manager and the encoder are details
+                listOf("SecurityFilterChain", "OncePerRequestFilter", "UserDetailsService", "AuthenticationProvider", "AuthenticationManager", "PasswordEncoder", "AuthenticationEntryPoint"),
                 listOf("security", "jjwt", "oauth")),
             Family(listOf("cach", "ehcache", "redis"), listOf("EnableCaching", "Cacheable", "CacheEvict", "CachePut", "Caching"), listOf("CacheManager"), listOf("cache", "ehcache", "jcache", "redis")),
             Family(listOf("error", "exception", "fail"), listOf("ControllerAdvice", "RestControllerAdvice", "ExceptionHandler", "ResponseStatus"), emptyList(), emptyList()),
@@ -70,6 +72,9 @@ class Queries(
             Family(listOf("cors", "intercept", "mvc"), listOf("CrossOrigin"), listOf("WebMvcConfigurer", "HandlerInterceptor"), emptyList()),
         )
         private const val WIRING_SITES = 12
+        private const val WIRING_BODIES = 3 // the framework bodies that answer a question the call chain cannot
+        /** What a framework calls on a registered component instead of the code calling it. */
+        private val FILTER_METHODS = setOf("doFilterInternal", "doFilter", "preHandle", "loadUserByUsername", "parse", "print", "convert")
         private const val FIELDS_MAX = 12
         private const val WHOLE_FILE_TOKENS = 700L // a file this size costs less whole than the same facts as fragments
         private const val CARD_MEMBERS = 30
@@ -127,6 +132,13 @@ class Queries(
 
     /** Member name with simple-name parameters, as the outline prints it: `save(Owner)` for `save(org.x.Owner)`. */
     private fun shortName(m: Node) = m.id.substringAfter('#').replace(PACKAGE, "")
+
+    /** What an id is called: the member, or the class when it has none. Parameter types carry dots of their own,
+     *  so the name is taken before the parameter list, never from the end of the string. */
+    private fun simpleName(id: String): String {
+        val head = id.substringBefore('(')
+        return (if ('#' in head) head.substringAfterLast('#') else head.substringAfterLast('.')).substringAfterLast('$')
+    }
 
     /** The node with this exact id, or the member an outline signature denotes (`a.Foo#save(Owner)`); the first overload wins a tie. */
     private fun resolve(id: String): Node? = resolveAll(id).firstOrNull()
@@ -702,12 +714,25 @@ class Queries(
         // scored on hits; routes break ties because most questions are about request handling.
         // words, not substrings: "add" must match addPet, not ModelAndView.addObject in the external list; the
         // label and the step names only, because parameter types in step ids (java.util.List) match everything
+        // how many flows each question word appears in: a word in every flow ("user", "request") says nothing about
+        // which one the question means, a word in one ("signin") says everything
+        val flowTokens = flows.keys.mapNotNull { store.node(it) }.associateWith { f ->
+            (f.fqn + " " + f.attrs["summary"].orEmpty().substringBefore("; external"))
+                .split(Regex("""[^\p{Alnum}]+|(?<=[a-z0-9])(?=[A-Z])""")).map { it.lowercase() }.toHashSet()
+        }
+        fun matches(tokens: Set<String>, stem: String) = tokens.any { it.startsWith(stem) || (stem.length >= 4 && stem.startsWith(it) && it.length >= 3) }
+        val stemFlows = stems.associateWith { s -> flowTokens.values.count { matches(it, s.lowercase()) } }
         fun coverage(f: Node): Int {
             val text = f.fqn + " " + f.attrs["summary"].orEmpty().substringBefore("; external")
             val tokens = text.split(Regex("""[^\p{Alnum}]+|(?<=[a-z0-9])(?=[A-Z])""")).map { it.lowercase() }.toHashSet()
             // "created" is a POST, "deleted" a DELETE: CRUD vocabulary names the verb, not the handler
             val verb = stems.any { HTTP_VERBS[it.lowercase()]?.let { v -> f.fqn.startsWith(v) } == true }
-            return stems.count { s -> s.lowercase().let { w -> tokens.any { it.startsWith(w) } } } + (if (verb) 1 else 0)
+            // a word half the flows share is not evidence; the rest score, the rarest highest
+            val half = maxOf(2, flowTokens.size / 2)
+            return stems.sumOf { s ->
+                if (!matches(tokens, s.lowercase())) 0
+                else when { (stemFlows[s] ?: 0) > half -> 0; (stemFlows[s] ?: 0) <= 2 -> 3; else -> 1 }
+            } + (if (verb) 1 else 0)
         }
         val kindOrder = listOf("route", "consumer", "job", "main")
         val rankedFlows = flows.entries.sortedWith(
@@ -765,7 +790,7 @@ class Queries(
         val chainSteps = if (rankedFlows.isEmpty()) chain(lead) else emptyList()
         val bestFlowSteps = flowSteps
         // a walk carries logic, not a DTO's getters or a generated builder: their shape is in `data`
-        val named = { id: String -> stems.any { s -> id.substringAfterLast('.').substringAfterLast('$').substringBefore('(').lowercase().contains(s.lowercase()) } }
+        val named = { id: String -> stems.any { s -> simpleName(id).lowercase().contains(s.lowercase()) } }
         fun packable(id: String) = store.node(id)?.let { it.origin != Origin.EXTERNAL && it.file != null && it.attrs["generated"] != "true" && (layerRank(id) < 2 || named(id)) } == true
         fun walk(from: String, steps: Int): List<String> = when (from) {
             // the precomputed flow already resolved dispatch and ordered the walk: the entry, then the flow from the match on
@@ -801,12 +826,24 @@ class Queries(
             }
             // the family lists its bean types in the order they explain the concept: the filter chain declares the
             // rules, the encoder is a detail. Store order put the detail first and the rules never fitted.
-            for (b in store.nodes(NodeKind.BEAN).sortedBy { f.beanTypes.indexOf(it.attrs["type"]?.substringAfterLast('.')).takeIf { i -> i >= 0 } ?: Int.MAX_VALUE }) {
-                val type = b.attrs["type"]?.substringAfterLast('.') ?: continue
-                if (type !in f.beanTypes) continue
-                val provider = b.attrs["provider"] ?: continue
+            // a @Component filter's bean type is its own class, not `OncePerRequestFilter`: ask the hierarchy
+            fun familyType(b: Node): String? {
+                val t = b.attrs["type"] ?: return null
+                t.substringAfterLast('.').takeIf { it in f.beanTypes }?.let { return it }
+                return store.edgesFrom(t, EdgeKind.EXTENDS).plus(store.edgesFrom(t, EdgeKind.IMPLEMENTS))
+                    .map { it.to.substringAfterLast('.') }.firstOrNull { it in f.beanTypes }
+            }
+            for (b in store.nodes(NodeKind.BEAN).sortedBy { f.beanTypes.indexOf(familyType(it)).takeIf { i -> i >= 0 } ?: Int.MAX_VALUE }) {
+                val type = familyType(b) ?: continue
+                // a @Bean method names itself in `provider`; a @Component is joined to its bean by an edge
+                val provider = b.attrs["provider"] ?: store.edgesTo(b.id, EdgeKind.PROVIDES_BEAN).firstOrNull()?.from ?: continue
                 if ('#' in provider) wiringBodies += provider // a @Bean method: its body is the configuration
-                else store.node(provider)?.let { c -> wiring += c to (type + " bean") }
+                else {
+                    store.node(provider)?.let { c -> wiring += c to (type + " bean") }
+                    // a filter's configuration is what it does per request, so its own override is the body to show
+                    store.edgesFrom(provider, EdgeKind.CONTAINS).map { it.to }
+                        .firstOrNull { it.substringAfter('#').substringBefore('(') in FILTER_METHODS }?.let { wiringBodies += it }
+                }
             }
         }
         val dependencies = manifest?.modules.orEmpty().flatMap { m -> m.configurations.flatMap { it.artifacts } }.filter { a -> families.any { f -> f.artifacts.any { w -> (a.name ?: "").contains(w, ignoreCase = true) } } }
@@ -823,7 +860,13 @@ class Queries(
         val cards = if (concentrated) spineFiles.filter { it !in whole } else emptyList()
         // a one-line delegation adds a header, a citation and a line of code to say what its caller already showed
         val trivial = { id: String -> store.node(id)?.let { (it.endLine ?: 0) - (it.startLine ?: 0) <= 1 && it.id != lead } == true }
-        val pack = (spine.filterIndexed { i, id -> i == 0 || !trivial(id) } + wiringBodies.filter { it !in spine }.take(2)).mapNotNull { id -> nodes[id] ?: store.node(id) }
+        // the framework body the question is about comes first: "token checks on subsequent requests" means the
+        // filter, not the encoder, whatever order the family lists its types in
+        val askedFirst = wiringBodies.filter { it !in spine }.distinct()
+            // what the question asks about first: its own words against the member and the class it lives in
+            .sortedBy { id -> if (stems.any { st -> val w = st.lowercase().take(5)
+                    simpleName(id).lowercase().contains(w) || owner(id).substringAfterLast('.').lowercase().contains(w) }) 0 else 1 }
+        val pack = (spine.filterIndexed { i, id -> i == 0 || !trivial(id) } + askedFirst.take(WIRING_BODIES)).mapNotNull { id -> nodes[id] ?: store.node(id) }
             .filter { n -> n.file == null || (n.file !in whole && n.file !in cards) } // its file is already going, whole or as a card
             .mapNotNull { n ->
             sources?.read(n, 0)?.let { s ->
