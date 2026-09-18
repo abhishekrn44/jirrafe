@@ -652,7 +652,11 @@ class Queries(
             val rest = words.filter { stem(it.lowercase()) != word }
             val scoped = if (rest.isEmpty()) emptyList() else
                 (find(rest.joinToString(" "), 10, setOf(kind)) + rest.flatMap { find(stem(it), 5, setOf(kind)) }).distinctBy { it.id }
-            (scoped.ifEmpty { store.nodes(kind).filter { it.attrs["remote"] != "true" }.take(10) }).forEachIndexed { i, n -> hit(n, 2.0 / (i + 1)) }
+            // a kind the question named is the answer when the question is only about that kind ("which endpoints
+            // exist"); when it is the object of a real subject ("what secures the endpoints"), an arbitrary ten of
+            // them must not outrank the subject, so an unscoped listing scores below a name match
+            if (scoped.isNotEmpty()) scoped.forEachIndexed { i, n -> hit(n, 2.0 / (i + 1)) }
+            else store.nodes(kind).filter { it.attrs["remote"] != "true" }.take(10).forEachIndexed { i, n -> hit(n, 0.5 / (i + 1)) }
         }
         if (hits.isEmpty()) for (w in words) store.nodesLike(w, 10).filter { wantsDocs || it.kind != NodeKind.DOC }.forEach { hit(it, 0.5) }
         // a hit on wiring (route, topic, config key, bean) is really about the code attached to it
@@ -744,12 +748,22 @@ class Queries(
         val candidates = leadHits.filter { e -> nodes[e.key]?.let { leadable(it) && it.attrs["generated"] != "true" } == true }
             .sortedByDescending { e -> e.value * (LAYER_WEIGHT[store.node(owner(e.key))?.attrs?.get("layer")] ?: 1.0) }
             .map { it.key }.distinct()
-        val lead = candidates.firstOrNull()
+        // A flow is ranked by how much of the question it covers; a body only by its own name. So one stray word
+        // beats a whole workflow: "request status changes" name-matched `changePassword`, which led the answer
+        // while the flow correctly showed `saveRequest`. When a flow covers two or more of the question's words,
+        // the bodies come from that flow, and the best match inside it leads.
+        val topFlow = rankedFlows.firstOrNull()?.let { store.node(it.key) }
+        val flowCovers = topFlow?.let { coverage(it) } ?: 0
+        val flowSteps = bestFlowStepsOf(topFlow)
+        // the flow won on covering the question, so its entry leads even when no word named it: `saveRequest` is
+        // what "the user-creation request and approval workflow" means, though the question never says the word
+        val flowLead = if (flowCovers >= 2) (candidates.firstOrNull { it in flowSteps }
+            ?: flowSteps.firstOrNull { id -> store.node(id)?.let { leadable(it) } == true }?.also { id -> store.node(id)?.let { (nodes as MutableMap)[id] = it } }) else null
+        val lead = flowLead ?: candidates.firstOrNull()
         // A library has no route, consumer or job, so nothing precomputes a flow and the agent walks the call chain
         // by reading files. Follow it here instead: the same shape, derived on the spot from the best match.
         val chainSteps = if (rankedFlows.isEmpty()) chain(lead) else emptyList()
-        val bestFlowSteps = rankedFlows.firstOrNull()?.let { store.node(it.key) }?.attrs?.get("steps")
-            ?.let { s -> json.parseToJsonElement(s).jsonArray.map { it.jsonObject["id"]!!.jsonPrimitive.content } }.orEmpty()
+        val bestFlowSteps = flowSteps
         // a walk carries logic, not a DTO's getters or a generated builder: their shape is in `data`
         val named = { id: String -> stems.any { s -> id.substringAfterLast('.').substringAfterLast('$').substringBefore('(').lowercase().contains(s.lowercase()) } }
         fun packable(id: String) = store.node(id)?.let { it.origin != Origin.EXTERNAL && it.file != null && it.attrs["generated"] != "true" && (layerRank(id) < 2 || named(id)) } == true
@@ -762,9 +776,9 @@ class Queries(
         // each further match adds a chain only where it leads somewhere the first did not
         val spine = ArrayList<String>()
         var walks = 0
-        for (c in candidates) {
+        for (c in (listOfNotNull(flowLead) + candidates).distinct()) { // the covering flow's entry walks first
             if (walks == PACK_LEADS || spine.size >= PACK_MAX || c in spine) continue
-            if (walks > 0 && hits[c]!! < hits[lead!!]!! * NEAR_MISS) break // a further chain only for a match that could as well be the answer
+            if (walks > 0 && (hits[c] ?: 0.0) < (hits[lead] ?: 0.0) * NEAR_MISS) break // a further chain only for a match that could as well be the answer
             spine += walk(c, if (walks == 0) PACK_STEPS else PACK_STEPS_MORE).filter { it !in spine }
             walks++
         }
@@ -785,7 +799,9 @@ class Queries(
                     if (f in asked || site.id in spineIds || ann.startsWith("Enable")) wiring += site to annotationText(site, a.id)
                 }
             }
-            for (b in store.nodes(NodeKind.BEAN)) {
+            // the family lists its bean types in the order they explain the concept: the filter chain declares the
+            // rules, the encoder is a detail. Store order put the detail first and the rules never fitted.
+            for (b in store.nodes(NodeKind.BEAN).sortedBy { f.beanTypes.indexOf(it.attrs["type"]?.substringAfterLast('.')).takeIf { i -> i >= 0 } ?: Int.MAX_VALUE }) {
                 val type = b.attrs["type"]?.substringAfterLast('.') ?: continue
                 if (type !in f.beanTypes) continue
                 val provider = b.attrs["provider"] ?: continue
@@ -988,6 +1004,9 @@ class Queries(
      * the best-resolved call into indexed non-test code, preferring a target that calls on, so the chain follows the
      * request rather than stopping at the first getter.
      */
+    private fun bestFlowStepsOf(flow: Node?): List<String> = flow?.attrs?.get("steps")
+        ?.let { s -> json.parseToJsonElement(s).jsonArray.map { it.jsonObject["id"]!!.jsonPrimitive.content } }.orEmpty()
+
     private fun chain(start: String?): List<String> {
         var current = start ?: return emptyList()
         val steps = arrayListOf(current)

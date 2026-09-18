@@ -177,8 +177,11 @@ must name. Five questions per repository, so treat every figure as a direction, 
 - **Turns.** Tool calls per question fell by half or more on every repository (roughly two to
   three instead of four to six), and about half of all questions were answered in a single call.
   Turns are what an agent's session costs in time, and what some assistants bill.
-- **Tokens and cost.** About a third fewer tokens read per question and about half the cost,
-  against the same model with grep. The saving is mostly the file reads that no longer happen.
+- **Tokens and calls.** Against a grep baseline on eight repositories, with the questions taken
+  from each project's own README and the answers keyed by a plain scan of its source: **55% fewer
+  tokens and 83% fewer tool calls per question** (1.3 calls against 7.8), reaching the right code
+  more often (76% against 48%). Live, against the same model with grep and file reads, about a
+  third fewer tokens and about half the cost; the saving is the file reads that no longer happen.
 - **Smaller models answer like larger ones.** The same held for a small, a mid-size and a large
   model (Haiku, Sonnet, Opus): calls fell 55-75% at every size, and the recall the graph reached
   was set by the repository, not the model; the three models scored the same on each repository
