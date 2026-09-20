@@ -7,10 +7,12 @@ asks "how does X work", "what calls Y" or "what breaks if I change Z" and gets t
 classes and methods, their callers and their source, every one cited as `file:line`, in a few
 calls instead of a grep session.
 
-**Half the tool calls, a third fewer tokens, half the cost per question** against the same
-model with grep and file reads, with the same or better answers, measured live on repositories the
-model had not memorised; and a small model with the graph reaches the facts a large one reaches by
-reading ([What to expect](#what-to-expect)).
+**Half the tool calls, a quarter fewer tokens, better answers** against the same model with grep
+and file reads, measured live on eleven repositories the model had never seen: 2.7 calls per
+question against 5.8, 27% fewer tokens, and the right code reached more often (90% against 87%).
+The saving grows with the question: where grep needs ten turns to follow a mechanism, the graph
+needs three. A small model with the graph reaches the facts a large one reaches by reading
+([What to expect](#what-to-expect)).
 
 Requirements: JDK 17 or 21; the project builds with Gradle 7.6+ or Maven 3.9. Kotlin modules are
 indexed from bytecode.
@@ -177,11 +179,14 @@ must name. Five questions per repository, so treat every figure as a direction, 
 - **Turns.** Tool calls per question fell by half or more on every repository (roughly two to
   three instead of four to six), and about half of all questions were answered in a single call.
   Turns are what an agent's session costs in time, and what some assistants bill.
-- **Tokens and calls.** Against a grep baseline on eight repositories, with the questions taken
-  from each project's own README and the answers keyed by a plain scan of its source: **55% fewer
-  tokens and 83% fewer tool calls per question** (1.3 calls against 7.8), reaching the right code
-  more often (76% against 48%). Live, against the same model with grep and file reads, about a
-  third fewer tokens and about half the cost; the saving is the file reads that no longer happen.
+- **Tokens and calls, live.** Eleven repositories the model had never seen (CLI tools, a chess
+  engine, a BSON codec, a MongoDB server, a Liquibase extension, a fingerprint matcher), the
+  questions taken blind from each project's own README, the same model with the skill against a
+  clean clone with grep and file reads: **53% fewer tool calls (2.7 against 5.8) and 27% fewer
+  tokens per question**, reaching the right code more often (90% against 87%), at lower cost.
+  Where grep had to follow a mechanism across files it took eight to twelve turns; the graph took
+  two to four. Offline, against a mechanical grep baseline on eight repositories: 55% fewer tokens
+  and 83% fewer calls (1.3 against 7.8), 76% against 48% recall.
 - **Smaller models answer like larger ones.** The same held for a small, a mid-size and a large
   model (Haiku, Sonnet, Opus): calls fell 55-75% at every size, and the recall the graph reached
   was set by the repository, not the model; the three models scored the same on each repository
