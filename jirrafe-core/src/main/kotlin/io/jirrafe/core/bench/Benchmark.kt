@@ -124,7 +124,11 @@ object Benchmark {
     }
 
     private fun score(found: Set<String>, expected: List<String>, tokens: Int, calls: Int): Run {
-        val hit = expected.count { e -> e.split('|').any { it in found } } // "a|b": any overload or duplicate of a name counts
+        // "a|b": any overload or duplicate of a name counts. A class counts when a member of it was found:
+        // the question asked about the class, and naming its method is naming it - otherwise an answer that
+        // cites `Foo#bar()` scores zero against a key that says `Foo`, which is a fault of the key.
+        fun matched(e: String) = e in found || (('#' !in e) && found.any { it.startsWith("$e#") })
+        val hit = expected.count { e -> e.split('|').any { matched(it) } }
         val precision = if (found.isEmpty()) 0.0 else hit.toDouble() / found.size
         val recall = if (expected.isEmpty()) 1.0 else hit.toDouble() / expected.size
         return Run(precision, recall, tokens, calls, found)
