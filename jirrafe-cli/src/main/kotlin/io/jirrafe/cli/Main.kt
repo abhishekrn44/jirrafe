@@ -74,15 +74,25 @@ object Pipeline {
             }
             "maven" -> {
                 val wrapper = dir.resolve(if (windows) "mvnw.cmd" else "mvnw")
-                listOf(if (wrapper.exists()) wrapper.toString() else "mvn", "-q", "-B", "compile", "io.jirrafe:jirrafe-maven-plugin:${version()}:resolve")
+                listOf(if (wrapper.exists()) wrapper.toString() else mavenFallback(windows) ?: "mvn", "-q", "-B", "compile", "io.jirrafe:jirrafe-maven-plugin:${version()}:resolve")
             }
             else -> throw CliktError("no Gradle or Maven build found in $dir")
         }
-        echo("resolve: ${command.joinToString(" ")}")
-        val process = ProcessBuilder(command).directory(dir.toFile()).inheritIO()
-        process.environment().putIfAbsent("JAVA_HOME", System.getProperty("java.home")) // mvnw refuses to start without it
-        val code = try { process.start().waitFor() } catch (e: java.io.IOException) {
-            throw CliktError("cannot run '${command[0]}' (${e.message}); add a Maven or Gradle wrapper to the project or put mvn/gradle on PATH")
+        fun run(cmd: List<String>): Int {
+            echo("resolve: ${cmd.joinToString(" ")}")
+            val process = ProcessBuilder(cmd).directory(dir.toFile()).inheritIO()
+            process.environment().putIfAbsent("JAVA_HOME", System.getProperty("java.home")) // mvnw refuses to start without it
+            return try { process.start().waitFor() } catch (e: java.io.IOException) {
+                throw CliktError("cannot run '${cmd[0]}' (${e.message}); add a Maven or Gradle wrapper to the project or put mvn/gradle on PATH")
+            }
+        }
+        var code = run(command)
+        // The project's Maven wrapper is the project's, not ours: mvnw.cmd 3.3 cannot start from a home path with a
+        // space, and a wrapper pinned to Maven 3.5 cannot run a plugin that needs 3.9. When it fails, the same
+        // command runs again on a Maven this machine already has: on PATH, or one an earlier wrapper downloaded.
+        if (code != 0 && command[0].endsWith(if (windows) "mvnw.cmd" else "mvnw")) mavenFallback(windows)?.let { mvn ->
+            echo("the wrapper failed (exit $code); retrying with $mvn")
+            code = run(listOf(mvn) + command.drop(1))
         }
         if (code != 0) throw CliktError("resolve failed with exit code $code")
         if (!out.resolve("manifest.json").exists()) throw CliktError("resolve produced no manifest at ${out.resolve("manifest.json")}")
@@ -91,6 +101,17 @@ object Pipeline {
             val manifest = out.resolve("manifest.json")
             Manifest.write(Manifest.reclassify(Manifest.read(manifest), patterns), manifest)
         }
+    }
+
+    /** `mvn` on PATH, else the newest Maven a wrapper has already downloaded under `~/.m2/wrapper/dists`. */
+    fun mavenFallback(windows: Boolean): String? {
+        val exe = if (windows) "mvn.cmd" else "mvn"
+        System.getenv("PATH").orEmpty().split(java.io.File.pathSeparator).map { Path.of(it.ifBlank { "." }).resolve(exe) }.firstOrNull { it.exists() }?.let { return it.toString() }
+        val dists = Path.of(System.getProperty("user.home"), ".m2", "wrapper", "dists").takeIf { Files.isDirectory(it) } ?: return null
+        val version = { p: Path -> Regex("""\d+(\.\d+)+""").find(p.fileName.toString())?.value?.split('.')?.map { it.toInt() } ?: emptyList() }
+        return Files.walk(dists, 4).use { s -> s.filter { it.fileName.toString() == exe && it.parent.fileName.toString() == "bin" }.toList() }
+            .maxWithOrNull(compareBy<Path>({ version(it.parent.parent.parent).getOrElse(0) { 0 } }, { version(it.parent.parent.parent).getOrElse(1) { 0 } }, { version(it.parent.parent.parent).getOrElse(2) { 0 } }))
+            ?.toString()
     }
 
     /** `<distribution>/plugins/jirrafe-gradle-*.jar` next to this jar, or the copy inside the fat jar, extracted under `.jirrafe/`. */
