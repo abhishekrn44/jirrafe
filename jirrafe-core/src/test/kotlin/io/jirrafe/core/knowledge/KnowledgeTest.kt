@@ -64,6 +64,7 @@ class KnowledgeTest {
         assertEquals(2, store.node("a.OrderService")!!.attrs["inDegree"]!!.toInt(), "controller and main; the test class is linked, not counted")
         val findings = store.nodes(NodeKind.FINDING).groupBy { it.attrs["kind"] }
         assertEquals("a.OrderService#unused()", findings["dead-code"]!!.single { it.attrs["severity"] == "warning" }.attrs["subject"])
+        assertTrue(findings["dead-code"]!!.none { it.attrs["subject"] == "a.JdbcConn#rollback()" }, "a public method of a class implementing an interface outside the graph is a contract, not dead code")
         assertEquals(1, findings["cyclic-packages"]!!.size)
         assertContains(findings["cyclic-packages"]!!.single().fqn, "a <-> b")
         assertTrue(store.edgesFrom("b", EdgeKind.HAS_FINDING).isNotEmpty(), "cycle attached to every package")

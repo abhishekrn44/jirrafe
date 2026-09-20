@@ -42,6 +42,11 @@ object SyntheticGraph {
         cls("a.OrderServiceTest", test = true)
         cls("a.Main")
         method("a.OrderController#list()"); method("a.OrderService#open()", doc = "Open orders"); method("a.OrderService#unused()", "private void unused()")
+        // implements an interface outside the graph: its public methods are a contract the framework calls, so `rollback()` has no caller and is not dead
+        store.node(Node("a.JdbcConn", NodeKind.CLASS, "a.JdbcConn", Origin.REPO, signature = "public class JdbcConn implements Connection", module = "app", file = "src/a/JdbcConn.java", startLine = 1, endLine = 50))
+        store.edge(Edge("a", "a.JdbcConn", EdgeKind.CONTAINS, Resolution.EXACT))
+        store.edge(Edge("a.OrderService", "a.JdbcConn", EdgeKind.USES_TYPE, Resolution.EXACT))
+        method("a.JdbcConn#rollback()")
         method("a.OrderRepository#findAll()", "public abstract java.util.List findAll()"); method("a.Order#getId()"); method("a.Order#setId(long)")
         method("a.OrderServiceTest#opens()", annotations = mapOf("org.junit.jupiter.api.Test" to emptyMap()))
         method("a.Main#main(java.lang.String[])", "public static void main(java.lang.String[])")

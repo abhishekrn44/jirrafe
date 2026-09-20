@@ -65,6 +65,14 @@ internal object Findings {
         "toString", "equals", "hashCode", "compareTo", "run", "call", "apply", "accept", "get", "test", "close", "iterator", "main",
     )
 
+    /** How many types `class X extends A implements B, C<D, E>` names as supertypes: three. */
+    private fun namedSupertypes(signature: String): Int {
+        var s = signature
+        while ('<' in s) s = s.replace(Regex("<[^<>]*>"), "")
+        val at = listOf(s.indexOf(" extends "), s.indexOf(" implements ")).filter { it >= 0 }.minOrNull() ?: return 0
+        return s.substring(at).replace(" extends ", ",").replace(" implements ", ",").split(',').count { it.isNotBlank() }
+    }
+
     private fun deadCode(g: ClassGraph): List<Finding> {
         val incoming = HashMap<String, MutableSet<EdgeKind>>()
         for (list in g.outgoing.values) for (e in list) if (e.kind != EdgeKind.CONTAINS) incoming.getOrPut(e.to) { HashSet() } += e.kind
@@ -84,6 +92,14 @@ internal object Findings {
                 continue
             }
             if (cls.kind == NodeKind.INTERFACE) continue
+            // A supertype whose methods the graph cannot see (java.sql.Connection, a framework base class) declares a
+            // contract the framework calls: `HibernateConnection#commit()` has no caller in the repo and is not dead.
+            // The signature names every supertype; an edge exists only to an indexed one, and a dependency's type
+            // is a stub holding only the members the repo happens to call. Either way a public method may be that
+            // contract and is not judged.
+            val supertypes = g.outgoing[cls.id].orEmpty().filter { it.kind == EdgeKind.EXTENDS || it.kind == EdgeKind.IMPLEMENTS }
+            val externalContract = namedSupertypes(cls.signature.orEmpty()) > supertypes.size ||
+                supertypes.any { e -> g.nodes[e.to]?.origin == Origin.EXTERNAL }
             for (m in members) {
                 val node = g.nodes[m] ?: continue
                 if (node.kind != NodeKind.METHOD) continue
@@ -97,6 +113,7 @@ internal object Findings {
                 if (incoming[m]?.any { it == EdgeKind.CALLS || it == EdgeKind.DISPATCHES_TO } == true) continue
                 if (g.outgoing[m].orEmpty().any { it.kind == EdgeKind.HANDLES_ROUTE || it.kind == EdgeKind.CONSUMES_FROM }) continue // entry point
                 val visible = "public" in sig || "protected" in sig
+                if (visible && externalContract) continue
                 out += Finding(m, "dead-code", "method", if (visible) "info" else "warning", "${g.shortName(m)} has no callers")
             }
         }
