@@ -234,13 +234,28 @@ class Queries(
     // ---- search and nodes ----------------------------------------------------------------------
 
     fun search(query: String, kinds: Set<NodeKind>? = null, limit: Int = 20, budget: Int = DEFAULT_BUDGET): JsonObject {
+        // bm25 ranks by length, so sixty dead-code findings on a class outrank the class and push it off the list,
+        // and `IntegersTest` precedes `Integers`. A finding is excluded in the query unless the query asks for one;
+        // the thing named comes first, then its members, a test last; the compiler's `this`/`class` fields are
+        // nobody's answer
+        val word = query.trim().substringAfterLast('.').substringAfterLast('#').lowercase()
+        val asksFindings = kinds?.contains(NodeKind.FINDING) == true || word.startsWith("finding") || word.startsWith("dead")
+        val asksTests = kinds?.contains(NodeKind.TEST) == true || word.startsWith("test")
+        val within = kinds ?: if (asksFindings) null else NodeKind.values().toSet() - NodeKind.FINDING
         val hits = LinkedHashMap<String, Node>()
-        for (n in store.search(query, limit, kinds)) hits[n.id] = n
-        if (hits.size < limit) for (n in store.nodesLike(query.trim(), limit - hits.size, kinds)) hits.putIfAbsent(n.id, n)
+        if (kinds == null) for (n in store.search(query, 10, CODE)) hits[n.id] = n // the class named, before its own sixty members push it off the list
+        for (n in store.search(query, limit * 3, within)) hits.putIfAbsent(n.id, n)
+        if (hits.size < limit) for (n in store.nodesLike(query.trim(), limit * 3 - hits.size, within)) hits.putIfAbsent(n.id, n)
+        val ranked = hits.values.filter { n -> !n.id.endsWith("#this") && !n.id.endsWith("#class") && !n.id.contains("#this$") }
+            .sortedWith(compareBy<Node> { n -> if (!asksTests && n.attrs["test"] == "true") 1 else 0 }
+                .thenBy { n -> if (simpleName(n.id).lowercase() == word) 0 else 1 }
+                .thenBy { n -> when (n.kind) { in CODE -> 0; NodeKind.METHOD, NodeKind.CONSTRUCTOR -> 1; NodeKind.FIELD -> 3; NodeKind.FINDING -> 4; else -> 2 } }
+                .thenBy { n -> n.id.length })
+            .take(limit)
         return fit(budget) { l ->
             buildJsonObject {
                 put("query", query)
-                put("results", buildJsonArray { for (n in hits.values.toList().cap(l)) add(buildJsonObject { ref(n).forEach { (k, v) -> put(k, v) }; n.signature?.let { put("signature", it) } }) })
+                put("results", buildJsonArray { for (n in ranked.cap(l)) add(buildJsonObject { ref(n).forEach { (k, v) -> put(k, v) }; n.signature?.let { put("signature", it) } }) })
             }
         }
     }

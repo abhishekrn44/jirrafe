@@ -69,6 +69,13 @@ object Render {
         section(o["communities"], "communities") { c -> "- " + c.str("label") + "  [" + c.str("id") + "]" + (c["summary"]?.let { ": " + it.jsonPrimitive.content } ?: "") }
     }
 
+    /** `- id  @ file:line  signature`, one per line: a list to pick an id from, not a JSON document to parse. */
+    fun search(o: JsonObject): String = buildString {
+        val results = o["results"]?.jsonArray.orEmpty()
+        if (results.isEmpty()) { appendLine("nothing named like `" + o.str("query") + "`; try a shorter fragment or another word"); return@buildString }
+        for (n in results.map { it.jsonObject }) appendLine("- " + n.str("id") + (n["at"]?.let { "  @ " + it.jsonPrimitive.content } ?: "") + (n["signature"]?.let { "  " + it.jsonPrimitive.content } ?: ""))
+    }
+
     /** One body, or a batch of them (`sources` with `pending`). Errors and candidate lists stay readable too. */
     fun sources(o: JsonObject): String = buildString {
         o["sources"]?.jsonArray?.let { list ->

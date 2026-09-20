@@ -76,6 +76,7 @@ object Daemon {
             r.format == "json" -> null
             r.tool == "explain" -> Render.explain(result)
             r.tool == "source" -> Render.sources(result)
+            r.tool == "search" -> Render.search(result)
             else -> null
         }
         return Answer(rendered ?: Queries.json.encodeToString(JsonObject.serializer(), result))

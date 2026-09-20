@@ -36,6 +36,8 @@ class QueriesTest {
     @Test
     fun `search uses full text then id substrings`() {
         assertContains(q.search("order service").ids("results"), "a.OrderService")
+        assertEquals("a.OrderService", q.search("OrderService").ids("results").first(), "the class named comes before its members")
+        assertTrue(q.search("OrderService").ids("results").none { it.endsWith("#this") || it.endsWith("#class") }, "no compiler fields")
         assertContains(q.search("Util2").ids("results"), "b.Util2")
         assertTrue(q.search("list", kinds = setOf(NodeKind.METHOD)).ids("results").all { '#' in it }, "kind filter keeps methods only")
     }
