@@ -657,10 +657,19 @@ class Queries(
         // prose answers usage ("how do I", "why", "what is"); a mechanism question ("how is X captured") is answered
         // by code, and a doc section that lists event names would otherwise outrank the method
         val wantsDocs = USAGE.containsMatchIn(question)
+        // bm25 prefers short entries: for "password" the fields and one-line accessors of four DTOs fill every slot
+        // before the twenty-line method that generates one. Code with a body and the types come first, then the
+        // accessors, then the fields; within a rank the search order stands
+        fun rank(n: Node) = when {
+            n.kind in CODE -> 0
+            n.kind == NodeKind.METHOD || n.kind == NodeKind.CONSTRUCTOR -> if ((n.endLine ?: 0) - (n.startLine ?: 0) >= 2) 0 else 1
+            n.kind == NodeKind.FIELD -> 2
+            else -> 0
+        }
         fun find(text: String, limit: Int, kinds: Set<NodeKind>? = null): List<Node> {
             // excluded in the query, not after it: a doc section must not take a candidate slot from the code it would displace
             val found = store.search(text, if (aboutTests) limit else limit * 3, kinds ?: if (wantsDocs) null else NON_DOC)
-            return (if (aboutTests) found else found.filter { it.attrs["test"] != "true" }).take(limit)
+            return (if (aboutTests) found else found.filter { it.attrs["test"] != "true" }).sortedBy { rank(it) }.take(limit)
         }
         find(words.joinToString(" "), 30).forEachIndexed { i, n -> hit(n, 3.0 / (i + 1)) }
         val stems = words.map { stem(it) }
@@ -812,13 +821,17 @@ class Queries(
         // while the flow correctly showed `saveRequest`. When a flow covers two or more of the question's words,
         // the bodies come from that flow, and the best match inside it leads.
         val topFlow = rankedFlows.firstOrNull()?.let { store.node(it.key) }
-        val flowCovers = topFlow?.let { coverage(it) } ?: 0
+        // two of the question's words, not a score of two: one rare word scores three, and "password generated"
+        // handed the answer to the changePassword flow on "password" alone, over the method that generates one
+        val flowCovers = topFlow?.let { f -> val tokens = flowTokens[f] ?: emptySet(); stems.count { s -> matches(tokens, s.lowercase()) && (stemFlows[s] ?: 0) <= maxOf(2, flowTokens.size / 2) } } ?: 0
         val flowSteps = bestFlowStepsOf(topFlow)
         // the flow won on covering the question, so its entry leads even when no word named it: `saveRequest` is
         // what "the user-creation request and approval workflow" means, though the question never says the word
         val flowLead = if (flowCovers >= 2) (candidates.firstOrNull { it in flowSteps }
             ?: flowSteps.firstOrNull { id -> store.node(id)?.let { leadable(it) } == true }?.also { id -> store.node(id)?.let { (nodes as MutableMap)[id] = it } }) else null
         val lead = flowLead ?: candidates.firstOrNull()
+        // JIRRAFE_DEBUG=1: the ranking on stderr, for reading why an answer led with what it did
+        if (System.getenv("JIRRAFE_DEBUG") == "1") System.err.println("debug: flowCovers=$flowCovers top=${topFlow?.fqn} lead=$lead" + System.lineSeparator() + candidates.take(8).joinToString(System.lineSeparator()) { "  %.2f %s".format(hits[it] ?: 0.0, it) })
         // A library has no route, consumer or job, so nothing precomputes a flow and the agent walks the call chain
         // by reading files. Follow it here instead: the same shape, derived on the spot from the best match.
         val chainSteps = if (rankedFlows.isEmpty()) chain(lead) else emptyList()
@@ -1043,8 +1056,12 @@ class Queries(
                 put("nodes", buildJsonArray {
                     // a kind the question named is listed in full, first: "what routes exist for authentication" is the routes
                     val listedIds = kindHits.map { it.id }
-                    val ranked = (listedIds + codeHits.map { it.key }).distinct().filter { it !in packed }
-                    for (id in ranked.cap(listedIds.size + (if (pack.isNotEmpty()) 3 else maxOf(2, l / 2)))) {
+                    // the repo's own code before a library stub or an annotation: `@GeneratedValue` and `lombok.Generated`
+                    // outscored the method that generates a password, and an agent cannot open either of them
+                    val ranked = (listedIds + codeHits.map { it.key }.sortedBy { if (nodes[it]?.origin == Origin.REPO) 0 else 1 }).distinct().filter { it !in packed }
+                    // five, not three: "password generated" led with generateToken, and the generator, fourth by score,
+                    // was cut from the list an agent would have followed it from
+                    for (id in ranked.cap(listedIds.size + (if (pack.isNotEmpty()) 5 else maxOf(2, l / 2)))) {
                         val n = nodes[id] ?: continue
                         add(buildJsonObject {
                             ref(n).forEach { (k, v) -> put(k, v) }
