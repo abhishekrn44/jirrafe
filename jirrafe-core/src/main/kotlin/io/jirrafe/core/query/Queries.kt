@@ -675,6 +675,7 @@ class Queries(
             if (stem != w) find(stem, 15).forEachIndexed { i, n -> hit(n, 0.8 / (i + 1)) }
         }
         // "which routes ...", "what topics ...": the question names a kind, so list that kind (filtered by the other words)
+        val kindHits = ArrayList<Node>() // the kind the question named: these lead the matches whatever a name scored
         for ((word, kind) in KIND_WORDS) if (words.any { stem(it.lowercase()) == word }) {
             val rest = words.filter { stem(it.lowercase()) != word }
             val scoped = if (rest.isEmpty()) emptyList() else
@@ -682,9 +683,19 @@ class Queries(
             // a kind the question named is the answer when the question is only about that kind ("which endpoints
             // exist"); when it is the object of a real subject ("what secures the endpoints"), an arbitrary ten of
             // them must not outrank the subject, so an unscoped listing scores below a name match
-            if (scoped.isNotEmpty()) scoped.forEachIndexed { i, n -> hit(n, 2.0 / (i + 1)) }
+            // "routes for authentication": no path says "authentication", but the handler's class does (`AuthController`).
+            // What the wiring is attached to names it as well as the wiring itself, so the listing is scoped by that
+            // before it falls back to an arbitrary ten
+            val byAttached = if (scoped.isNotEmpty() || rest.isEmpty()) emptyList() else store.nodes(kind).filter { n ->
+                n.attrs["remote"] != "true" && store.edgesTo(n.id).any { e -> val words = e.from.substringBefore('(').split(Regex("""[^\p{Alnum}]+|(?<=[a-z0-9])(?=[A-Z])""")).map { it.lowercase() }.toHashSet()
+                    rest.any { r -> val st = stem(r.lowercase()); words.any { w -> w.startsWith(st) || (st.length >= 4 && st.startsWith(w) && w.length >= 3) } } }
+            }
+            val listed = scoped.ifEmpty { byAttached }.ifEmpty { if (rest.isEmpty()) store.nodes(kind).filter { it.attrs["remote"] != "true" }.take(20) else emptyList() }
+            if (listed.isNotEmpty()) { listed.forEachIndexed { i, n -> hit(n, 2.0 / (i + 1)) }; kindHits += listed }
             else store.nodes(kind).filter { it.attrs["remote"] != "true" }.take(10).forEachIndexed { i, n -> hit(n, 0.5 / (i + 1)) }
         }
+        // "what routes exist for authentication" is answered by the list; "how does the signin route work" by its body
+        val listing = kindHits.isNotEmpty() && !question.trim().lowercase().startsWith("how")
         if (hits.isEmpty()) for (w in words) store.nodesLike(w, 10).filter { wantsDocs || it.kind != NodeKind.DOC }.forEach { hit(it, 0.5) }
         // a hit on wiring (route, topic, config key, bean) is really about the code attached to it
         for ((id, score) in hits.toList()) {
@@ -698,6 +709,14 @@ class Queries(
                 else -> emptyList()
             }
             for (e in attached) store.node(if (e.to == id) e.from else e.to)?.let { hit(it, score * 0.9) }
+            // a hit on a library method is really about the code that calls it: "JWT signing" is `JwtBuilder#signWith`
+            // by name and `generateToken` in this repo. The method's own name must say it: "stream" matched
+            // `StreamResult#<init>` by its class and led to that constructor's callers, nothing to do with the question.
+            // And only a method few places call; one the whole codebase calls (`List#add`) says nothing about which
+            if (n.origin == Origin.EXTERNAL && n.kind == NodeKind.METHOD && stems.any { st -> simpleName(id).lowercase().startsWith(st.lowercase()) }) {
+                val callers = store.edgesTo(id, EdgeKind.CALLS).mapNotNull { store.node(it.from) }.filter { it.origin == Origin.REPO && it.attrs["test"] != "true" }
+                if (callers.size in 1..3) for (c in callers) hit(c, score * 0.9)
+            }
         }
         // what earlier sessions fetched after asking the same thing comes first, body included: the second call
         // of last time is the first answer of this time
@@ -817,6 +836,7 @@ class Queries(
         val spine = ArrayList<String>()
         var walks = 0
         for (c in (listOfNotNull(flowLead) + candidates).distinct()) { // the covering flow's entry walks first
+            if (listing) break
             if (walks == PACK_LEADS || spine.size >= PACK_MAX || c in spine) continue
             if (walks > 0 && (hits[c] ?: 0.0) < (hits[lead] ?: 0.0) * NEAR_MISS) break // a further chain only for a match that could as well be the answer
             spine += walk(c, if (walks == 0) PACK_STEPS else PACK_STEPS_MORE).filter { it !in spine }
@@ -877,10 +897,12 @@ class Queries(
         val trivial = { id: String -> store.node(id)?.let { (it.endLine ?: 0) - (it.startLine ?: 0) <= 1 && it.id != lead } == true }
         // the framework body the question is about comes first: "token checks on subsequent requests" means the
         // filter, not the encoder, whatever order the family lists its types in
-        val askedFirst = wiringBodies.filter { it !in spine }.distinct()
-            // what the question asks about first: its own words against the member and the class it lives in
-            .sortedBy { id -> if (stems.any { st -> val w = st.lowercase().take(5)
-                    simpleName(id).lowercase().contains(w) || owner(id).substringAfterLast('.').lowercase().contains(w) }) 0 else 1 }
+        // what the question asks about: its own words against the member and the class it lives in
+        val namedWiring = { id: String -> stems.any { st -> val w = st.lowercase().take(5)
+            simpleName(id).lowercase().contains(w) || owner(id).substringAfterLast('.').lowercase().contains(w) } }
+        // "JWT signing" is answered by `generateToken`; the filter chain and the user-details service are the same
+        // family and not the question. They ride when the question names them, or when nothing else answers it
+        val askedFirst = wiringBodies.filter { it !in spine }.distinct().filter { !listing && (spine.isEmpty() || namedWiring(it)) }
         val pack = (spine.filterIndexed { i, id -> i == 0 || !trivial(id) } + askedFirst.take(WIRING_BODIES)).mapNotNull { id -> nodes[id] ?: store.node(id) }
             .filter { n -> n.file == null || (n.file !in whole && n.file !in cards) } // its file is already going, whole or as a card
             .mapNotNull { n ->
@@ -1019,7 +1041,10 @@ class Queries(
                 // the other matches: with bodies packed, a few names and lines for the agent to choose to follow; the
                 // edge lists that were the follow-up ids before the bodies were here are now the bodies' own `calls`
                 put("nodes", buildJsonArray {
-                    for ((id, _) in codeHits.filter { it.key !in packed }.cap(if (pack.isNotEmpty()) 3 else maxOf(2, l / 2))) {
+                    // a kind the question named is listed in full, first: "what routes exist for authentication" is the routes
+                    val listedIds = kindHits.map { it.id }
+                    val ranked = (listedIds + codeHits.map { it.key }).distinct().filter { it !in packed }
+                    for (id in ranked.cap(listedIds.size + (if (pack.isNotEmpty()) 3 else maxOf(2, l / 2)))) {
                         val n = nodes[id] ?: continue
                         add(buildJsonObject {
                             ref(n).forEach { (k, v) -> put(k, v) }
@@ -1195,5 +1220,6 @@ class Queries(
         "unused" to NodeKind.FINDING, "dead" to NodeKind.FINDING, "cycle" to NodeKind.FINDING, "cyclic" to NodeKind.FINDING, "conflict" to NodeKind.FINDING, "violation" to NodeKind.FINDING, "smell" to NodeKind.FINDING,
     )
 
-    private val STOP = setOf("the", "and", "how", "does", "what", "where", "which", "with", "for", "this", "that", "are", "when", "from", "into", "work", "works", "code", "mechanism", "used", "use", "uses")
+    private val STOP = setOf("the", "and", "how", "does", "what", "where", "which", "with", "for", "this", "that", "are", "when", "from", "into", "work", "works", "code", "mechanism", "used", "use", "uses",
+        "exist", "exists", "there", "list", "repo", "project") // "in this repo" is not about `UserRepo`; "which routes exist" is about the routes
 }
