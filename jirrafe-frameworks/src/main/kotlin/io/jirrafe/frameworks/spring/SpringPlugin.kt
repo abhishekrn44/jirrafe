@@ -42,6 +42,7 @@ class SpringPlugin : FrameworkPlugin {
             collectBeans()
             injections()
             routes()
+            access()
             configBindings()
             jpa()
             listeners()
@@ -294,6 +295,25 @@ class SpringPlugin : FrameworkPlugin {
                         attrs = mapOf("verb" to verb, "path" to path, "handler" to m.id)))
                     store.edge(Edge(m.id, id, EdgeKind.HANDLES_ROUTE, Resolution.HEURISTIC))
                 }
+            }
+        }
+
+        // ---- access rules -----------------------------------------------------------------------
+
+        /** The filter chain's rule for each route, as the route's signature: `hasRole(ADMIN)` on `POST /v1/user/approveRequest/{tempFk}`. */
+        private fun access() {
+            val rules = ArrayList<Pair<String, String>>()
+            for (m in store.nodes(NodeKind.METHOD)) {
+                if (m.origin != Origin.REPO || m.signature?.contains("SecurityFilterChain") != true) continue
+                val text = runCatching { java.nio.file.Files.readAllLines(java.nio.file.Path.of(m.file!!)).subList((m.startLine ?: 1) - 1, m.endLine ?: 0).joinToString(" ") }.getOrNull() ?: continue
+                rules += RouteAccess.rules(text)
+            }
+            if (rules.isEmpty()) return
+            store.flush() // the routes are batched inserts until then, and a query would see none of them
+            for (r in store.nodes(NodeKind.HTTP_ROUTE)) {
+                val path = r.attrs["path"] ?: continue
+                val rule = rules.firstOrNull { (pattern, _) -> RouteAccess.matches(pattern, path) }?.second ?: continue
+                store.node(r.copy(signature = rule), replace = true)
             }
         }
 

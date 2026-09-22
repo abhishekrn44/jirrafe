@@ -684,10 +684,12 @@ class Queries(
         for (w in words) {
             // a word one or two things in the code carry says which thing the question means: "admin" is on one
             // method, "user" is on everything. The flows already score a rare word three times; so does a body
-            val found = find(w, 15); val rare = if (found.size <= 2) 3.0 else 1.0
-            found.forEachIndexed { i, n -> hit(n, rare / (i + 1)) }
+            // rare counted over code: the routes and the README that carry "admin" all point at the same method
+            fun rare(found: List<Node>) = if (found.count { it.kind in CODE || it.kind == NodeKind.METHOD || it.kind == NodeKind.CONSTRUCTOR } <= 2) 3.0 else 1.0
+            val found = find(w, 15); val r = rare(found)
+            found.forEachIndexed { i, n -> hit(n, r / (i + 1)) }
             val stem = stem(w)
-            if (stem != w) find(stem, 15).let { f -> val r = if (f.size <= 2) 3.0 else 1.0; f.forEachIndexed { i, n -> hit(n, 0.8 * r / (i + 1)) } }
+            if (stem != w) find(stem, 15).let { f -> val rs = rare(f); f.forEachIndexed { i, n -> hit(n, 0.8 * rs / (i + 1)) } }
         }
         // "which routes ...", "what topics ...": the question names a kind, so list that kind (filtered by the other words)
         val kindHits = ArrayList<Node>() // the kind the question named: these lead the matches whatever a name scored
