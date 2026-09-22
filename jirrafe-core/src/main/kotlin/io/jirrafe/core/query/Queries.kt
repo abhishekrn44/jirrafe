@@ -36,7 +36,7 @@ class Queries(
     companion object {
         val json = Json { encodeDefaults = false }
         const val DEFAULT_BUDGET = 3000 // a ceiling; the measured answers are well under it, and the bodies shrink last
-        private val LIMITS = intArrayOf(Int.MAX_VALUE, 40, 20, 15, 10, 7, 5, 3, 1) // 20 -> 10 halved every section and left half the budget unused
+        private val LIMITS = intArrayOf(Int.MAX_VALUE, 40, 20, 15, 10, 7, 5, 3, 2, 1) // 20 -> 10 halved every section and left half the budget unused
         private val STRUCTURE = setOf(EdgeKind.CONTAINS, EdgeKind.MEMBER_OF_COMMUNITY, EdgeKind.STEP_OF_FLOW, EdgeKind.HAS_FINDING, EdgeKind.IMPORTS, EdgeKind.TESTS)
         private val CODE = setOf(NodeKind.CLASS, NodeKind.INTERFACE, NodeKind.ENUM, NodeKind.RECORD, NodeKind.ANNOTATION)
         private const val DISPATCH_FLOOR = 0.2 // 1/n: a call site with more than five implementations names none of them
@@ -78,6 +78,8 @@ class Queries(
         private const val FIELDS_MAX = 12
         private const val WHOLE_FILE_TOKENS = 700L // a file this size costs less whole than the same facts as fragments
         private const val CARD_MEMBERS = 30
+        /** A question about a workflow: its second step is not called by its first, it reads what the first wrote. */
+        private val WORKFLOW = Regex("\\b(workflow|steps?|process|lifecycle|end[ -]to[ -]end)\\b")
         private const val NEAR_MISS = 0.5 // a second match scoring this fraction of the first gets its own chain; new tokens cost twelve times re-read ones
         /** Where a request goes next, by the knowledge layer's classification of the target's class. */
         private val LAYER_RANK = mapOf("controller" to 0, "service" to 0, "repository" to 0, "client" to 0, "util" to 2, "config" to 2, "model" to 3)
@@ -95,6 +97,7 @@ class Queries(
         var last: JsonObject? = null
         for (limit in LIMITS) {
             val o = build(limit)
+            if (System.getenv("JIRRAFE_DEBUG") == "1") System.err.println("debug: fit level=$limit tokens=${tokens(o)} budget=$budget")
             if (tokens(o) <= budget) return o
             last = o
         }
@@ -860,6 +863,7 @@ class Queries(
         // each further match adds a chain only where it leads somewhere the first did not
         val spine = ArrayList<String>()
         var walks = 0
+        var firstWalk = 0 // where the lead's own chain ends: a workflow's next step goes in there, ahead of a mere runner-up
         for (c in (listOfNotNull(flowLead) + candidates).distinct()) { // the covering flow's entry walks first
             if (listing) break
             if (walks == PACK_LEADS || spine.size >= PACK_MAX || c in spine) continue
@@ -868,8 +872,32 @@ class Queries(
             if (System.getenv("JIRRAFE_DEBUG") == "1") System.err.println("debug: walk $walks from ${simpleName(c)} (%.2f) -> ${steps.map { simpleName(it) }}".format(hits[c] ?: 0.0))
             spine += steps
             walks++
+            if (walks == 1) firstWalk = spine.size
+        }
+        // A workflow's second step is not called by its first; it reads what the first wrote. So when the question asks
+        // for one, the route handler whose own chain touches a repository the lead's chain touched is the next step,
+        // whatever it scored: approveRequest finds by tempPk what saveRequest saved, and "creating a user via admin"
+        // never says "approve"
+        if (WORKFLOW.containsMatchIn(question.lowercase()) && spine.isNotEmpty()) {
+            fun repos(ids: List<String>) = ids.flatMap { id -> store.edgesFrom(id, EdgeKind.CALLS).map { owner(it.to) } }
+                .filter { c -> store.node(c)?.let { n -> n.origin == Origin.REPO && (n.attrs["layer"] == "repository" || simpleName(c).endsWith("Repo") || simpleName(c).endsWith("Repository")) } == true }.toSet()
+            val leadRepos = repos(spine)
+            val handlers = store.edges(EdgeKind.HANDLES_ROUTE).map { it.from }.distinct().filter { h -> h !in spine && store.node(h)?.let { leadable(it) } == true }
+            if (System.getenv("JIRRAFE_DEBUG") == "1") System.err.println("debug: workflow leadRepos=${leadRepos.map { simpleName(it) }} handlers=${handlers.size} " +
+                handlers.joinToString(" ") { h -> simpleName(h) + ":" + (repos(chain(h)) intersect leadRepos).size })
+            val next = if (leadRepos.isEmpty()) null else handlers
+                .map { h -> h to (repos(chain(h)) intersect leadRepos).size }.filter { it.second > 0 }
+                .sortedWith(compareByDescending<Pair<String, Int>> { it.second }.thenBy { if (owner(it.first) == owner(spine.first())) 0 else 1 }).firstOrNull()?.first
+            if (next != null) {
+                val steps = walk(next, PACK_STEPS_MORE).filter { it !in spine }
+                if (System.getenv("JIRRAFE_DEBUG") == "1") System.err.println("debug: workflow step from ${simpleName(next)} -> ${steps.map { simpleName(it) }}")
+                spine.subList(firstWalk, spine.size).clear() // the runner-up's chain yields to the workflow's next step
+                spine.removeAll { id -> id != lead && store.node(id)?.let { (it.endLine ?: 0) - (it.startLine ?: 0) <= 1 } == true } // an abstract repository method is no step, and held a slot
+                spine += steps
+            }
         }
         if (spine.size > PACK_MAX) spine.subList(PACK_MAX, spine.size).clear()
+        if (System.getenv("JIRRAFE_DEBUG") == "1") System.err.println("debug: spine=${spine.map { simpleName(it) }}")
         // Whole bodies. A cut at thirty lines was an invitation to fetch the rest, and that turn costs more than the
         // whole method does; only something longer than a screen and a half is the agent's own call to read.
         // the families in play: named by the question, or declared on what the chain packs
@@ -1014,8 +1042,10 @@ class Queries(
                         add(buildJsonObject { put("id", id); put("label", c.attrs["llmLabel"] ?: c.fqn); c.attrs["llmSummary"]?.let { put("summary", it) } })
                     }
                 })
-                // the bodies come before the id lists and shrink last: they are the answer, the ids are the map
-                val bodies = pack.cap(when { l >= 20 -> PACK_MAX; l >= 10 -> 4; l >= 5 -> 2; l >= 3 -> 1; else -> 0 })
+                // the bodies come before the id lists and shrink last: they are the answer, the ids are the map. At the
+                // budget the answer sits between levels 5 and 9, where two bodies were kept and the flow listing, the
+                // wiring sites and the matches were not: a workflow's second step was cut while its map stayed
+                val bodies = pack.cap(when { l >= 20 -> PACK_MAX; l >= 3 -> 4; l >= 2 -> 3; l >= 1 -> 1; else -> 0 })
                 if (bodies.isNotEmpty()) put("pack", buildJsonArray {
                     for (p in bodies) add(buildJsonObject {
                         put("id", p.id); put("at", "${relative(p.source.file)}:${p.source.startLine}")
@@ -1077,7 +1107,8 @@ class Queries(
                     val ranked = (listedIds + codeHits.map { it.key }.sortedWith(compareBy({ if (nodes[it]?.origin == Origin.REPO) 0 else 1 }, { nodes[it]?.let { n -> rank(n) } ?: 0 }))).distinct().filter { it !in packed }
                     // five, not three: "password generated" led with generateToken, and the generator, fourth by score,
                     // was cut from the list an agent would have followed it from
-                    for (id in ranked.cap(listedIds.size + (if (pack.isNotEmpty()) 5 else maxOf(2, l / 2)))) {
+                    // and when the budget binds (level three and under), the map yields to the bodies: two, not five
+                    for (id in ranked.cap(listedIds.size + (if (pack.isNotEmpty()) (if (l >= 5) 5 else 2) else maxOf(2, l / 2)))) {
                         val n = nodes[id] ?: continue
                         add(buildJsonObject {
                             ref(n).forEach { (k, v) -> put(k, v) }
