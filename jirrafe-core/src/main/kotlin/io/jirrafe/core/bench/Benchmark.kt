@@ -1,6 +1,7 @@
 package io.jirrafe.core.bench
 
 import io.jirrafe.core.model.NodeKind
+import io.jirrafe.core.model.Origin
 import io.jirrafe.core.manifest.Manifest
 import io.jirrafe.core.query.Queries
 import io.jirrafe.core.query.SourceReader
@@ -54,12 +55,15 @@ object Benchmark {
     fun run(store: GraphStore, root: Path, sourceDirs: List<Path>, questions: List<Question>, budget: Int = Queries.DEFAULT_BUDGET, sources: SourceReader? = null, manifest: Manifest? = null): Result {
         val q = Queries(store, store.meta("root") ?: root.toString(), manifest, sources)
         val index = SourceIndex(store, root, sourceDirs)
-        return Result(questions.map { question -> Row(question, graph(q, question, budget), grep(index, question)) })
+        // every repo class by id, so a name in a shipped body can be credited as the id it is
+        val named = listOf(NodeKind.CLASS, NodeKind.INTERFACE, NodeKind.ENUM, NodeKind.RECORD, NodeKind.ANNOTATION)
+            .flatMap { store.nodes(it) }.filter { it.origin == Origin.REPO }.map { it.id }
+        return Result(questions.map { question -> Row(question, graph(q, question, budget, named), grep(index, question)) })
     }
 
     // ---- graph -----------------------------------------------------------------------------------
 
-    private fun graph(q: Queries, question: Question, budget: Int): Run {
+    private fun graph(q: Queries, question: Question, budget: Int, named: List<String>): Run {
         val found = LinkedHashSet<String>()
         var tokens = 0
         var calls = 0
@@ -74,6 +78,17 @@ object Benchmark {
             o["pack"]?.jsonArray?.forEach { found += it.jsonObject["id"]!!.jsonPrimitive.content }
             // the entities and the framework declarations in the answer are read too: an agent cites `User { ... }` from `data`
             for (section in listOf("data", "wiring")) o[section]?.jsonArray?.forEach { found += it.jsonObject["id"]!!.jsonPrimitive.content }
+            for (section in listOf("cards", "files")) o[section]?.jsonArray?.forEach { c ->
+                c.jsonObject["id"]?.jsonPrimitive?.content?.let { found += it }
+                c.jsonObject["bodies"]?.jsonArray?.forEach { found += it.jsonObject["id"]!!.jsonPrimitive.content }
+            }
+            // A class the shipped code names is a class the agent can cite, as the grep baseline credits every node in
+            // the window it read: BsonParser's body says BsonConstants.TYPE_END twenty-six times
+            val text = listOf("pack", "cards", "files").flatMap { sec -> o[sec]?.jsonArray.orEmpty() }.joinToString(" ") { e ->
+                val obj = e.jsonObject
+                (obj["text"]?.jsonPrimitive?.content ?: "") + " " + obj["bodies"]?.jsonArray.orEmpty().joinToString(" ") { it.jsonObject["text"]?.jsonPrimitive?.content ?: "" }
+            }
+            if (text.isNotBlank()) for (id in named) if (id !in found && Regex("""\b""" + Regex.escape(id.substringAfterLast('.')) + """\b""").containsMatchIn(text)) found += id
         }
         // `stale` describes the checkout, not the graph: a benchmark clone whose build rewrote its headers would pay for it on every question
         val explain = JsonObject(q.explain(question.question, budget).filterKeys { it != "stale" })
