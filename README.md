@@ -187,13 +187,15 @@ must name. Five questions per repository, so treat every figure as a direction, 
   Where grep had to follow a mechanism across files it took eight to twelve turns; the graph took
   two to four. Offline, against a mechanical grep baseline on eight repositories: 55% fewer tokens
   and 83% fewer calls (1.3 against 7.8), 76% against 48% recall.
-- **Smaller models answer like larger ones.** The same held for a small, a mid-size and a large
-  model (Haiku, Sonnet, Opus): calls fell 55-75% at every size, and the recall the graph reached
-  was set by the repository, not the model; the three models scored the same on each repository
-  once the graph was there. The smallest model with the graph reached the same facts as the largest
-  model with grep on two of three repositories, one question behind on the third, at roughly a
-  tenth of the price, and cited about twice as many locations per answer at the same accuracy.
-  The graph changes what a model finds; a larger model still explains it better.
+- **A cheaper model finds what an expensive one finds.** Six repositories, twenty questions, each
+  side run the same day: a small or mid-size model with the graph against a larger model with grep
+  (Haiku against Sonnet, and on the hardest repository Sonnet against Opus). **78% recall at $0.030
+  a question against 85% at $0.103** - a third of the cost, 2.6 tool calls against 6.2, 43% fewer
+  tokens, the same wall clock. Four of the six tied on recall; on Spring Petclinic the small model
+  with the graph answered every question in 1.8 calls at $0.020, against 4.4 calls at $0.054.
+  The graph changes what a model finds, not how well it writes it up: judged blind on the prose
+  itself, the larger model still explains it better, so read this as retrieval parity, not answer
+  parity.
 - **Unprompted.** The skill loaded on its own for every question shape tested ("how is", "where
   is", "find the code that", "which class", "what calls").
 - **Docs.** For "how do I use X" questions on a project with real usage documentation, the graph
