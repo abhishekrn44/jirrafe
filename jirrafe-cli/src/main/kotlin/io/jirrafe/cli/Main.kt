@@ -458,7 +458,9 @@ class Bench : CoreCliktCommand(name = "bench") {
         val manifest = Manifest.read(root.resolve(".jirrafe/manifest.json"))
         val sourceDirs = manifest.modules.flatMap { it.sourceDirs + it.resourceDirs }.map(Path::of)
         val md = GraphStore.open(root.resolve(".jirrafe/graph.db")).use { store ->
-            Benchmark.markdown("${root.fileName} (budget $budget)", Benchmark.run(store, root, sourceDirs, Benchmark.load(questions), budget))
+            val config = Config.load(root)
+            val sources = Sources(root.resolve(".jirrafe"), manifest, allowPublic = false, decompile = config.string("deps.decompile", "internal-only") != "never")
+            Benchmark.markdown("${root.fileName} (budget $budget)", Benchmark.run(store, root, sourceDirs, Benchmark.load(questions), budget, sources, manifest))
         }
         echo(md)
         output?.let { Files.writeString(it, md); echo("wrote $it") }

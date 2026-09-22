@@ -1,7 +1,9 @@
 package io.jirrafe.core.bench
 
 import io.jirrafe.core.model.NodeKind
+import io.jirrafe.core.manifest.Manifest
 import io.jirrafe.core.query.Queries
+import io.jirrafe.core.query.SourceReader
 import io.jirrafe.core.store.GraphStore
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -48,8 +50,9 @@ object Benchmark {
 
     fun load(file: Path): List<Question> = json.decodeFromString(kotlinx.serialization.builtins.ListSerializer(Question.serializer()), Files.readString(file))
 
-    fun run(store: GraphStore, root: Path, sourceDirs: List<Path>, questions: List<Question>, budget: Int = Queries.DEFAULT_BUDGET): Result {
-        val q = Queries(store, store.meta("root") ?: root.toString())
+    /** [sources] reads bodies for the answer; without it explain returns id lists only, which is not what an agent sees. */
+    fun run(store: GraphStore, root: Path, sourceDirs: List<Path>, questions: List<Question>, budget: Int = Queries.DEFAULT_BUDGET, sources: SourceReader? = null, manifest: Manifest? = null): Result {
+        val q = Queries(store, store.meta("root") ?: root.toString(), manifest, sources)
         val index = SourceIndex(store, root, sourceDirs)
         return Result(questions.map { question -> Row(question, graph(q, question, budget), grep(index, question)) })
     }
@@ -69,6 +72,8 @@ object Benchmark {
             }
             o["results"]?.jsonArray?.forEach { found += it.jsonObject["id"]!!.jsonPrimitive.content }
             o["pack"]?.jsonArray?.forEach { found += it.jsonObject["id"]!!.jsonPrimitive.content }
+            // the entities and the framework declarations in the answer are read too: an agent cites `User { ... }` from `data`
+            for (section in listOf("data", "wiring")) o[section]?.jsonArray?.forEach { found += it.jsonObject["id"]!!.jsonPrimitive.content }
         }
         // `stale` describes the checkout, not the graph: a benchmark clone whose build rewrote its headers would pay for it on every question
         val explain = JsonObject(q.explain(question.question, budget).filterKeys { it != "stale" })
