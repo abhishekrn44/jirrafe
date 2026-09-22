@@ -815,12 +815,15 @@ class Queries(
         // words as well as the service does. On a small application the second and third candidates are as often the
         // answer as the first ("how is a user created": the request and the approval both create one), and reading both
         // costs less than one more turn.
-        // a class the question names ("the client", "the filter") is explained by what its constructor sets up: the
-        // constructor's name is `<init>` and matches no word, so it stands in for the class with the class's score
+        // A class the question names ("the parser", "the filter") is explained by the member that does its work: no
+        // member name matches the question, so the busiest one stands in for the class with the class's score. The
+        // constructor was standing in, and a constructor sets fields up; BsonParser's was packed with a two-line
+        // feature check while nextToken, which is the parser, went unread
         for (e in codeHits.filter { nodes[it.key]?.kind in CODE }.take(3)) {
-            store.edgesFrom(e.key, EdgeKind.CONTAINS).map { it.to }.filter { it.contains("#<init>") }.mapNotNull { store.node(it) }
-                .filter { leadable(it) && it !in nodes.values }.maxByOrNull { (it.endLine ?: 0) - (it.startLine ?: 0) }
-                ?.let { ctor -> hits[ctor.id] = e.value; (nodes as MutableMap)[ctor.id] = ctor }
+            store.edgesFrom(e.key, EdgeKind.CONTAINS).map { it.to }.mapNotNull { store.node(it) }
+                .filter { leadable(it) && it !in nodes.values }
+                .maxWithOrNull(compareBy({ store.edgesFrom(it.id, EdgeKind.CALLS).count() }, { (it.endLine ?: 0) - (it.startLine ?: 0) }))
+                ?.let { m -> hits[m.id] = e.value; (nodes as MutableMap)[m.id] = m }
         }
         val leadHits = hits.entries.filter { nodes[it.key]?.kind !in setOf(NodeKind.FLOW, NodeKind.COMMUNITY, NodeKind.PACKAGE, NodeKind.FILE) }
             .sortedByDescending { if (nodes[it.key]?.attrs?.get("test") == "true") it.value * 0.3 else it.value }
