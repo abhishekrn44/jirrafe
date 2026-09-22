@@ -13,6 +13,7 @@ import kotlin.io.path.extension
 import kotlin.io.path.isRegularFile
 import kotlin.io.path.name
 import kotlin.io.path.relativeTo
+import io.jirrafe.core.config.Config
 import kotlin.io.path.walk
 
 /**
@@ -22,7 +23,8 @@ import kotlin.io.path.walk
  */
 class DocExtractor(private val store: GraphStore) {
     private companion object {
-        // .claude holds the skill jirrafe installs, .idea and .vscode an editor's notes: none of them is the project's documentation
+        // .claude holds the skill jirrafe installs, .idea and .vscode an editor's notes: none of them is the project's
+        // documentation. `docs.skip_dirs` in jirrafe.toml adds to the list
         val SKIP = setOf(".git", ".jirrafe", ".claude", ".idea", ".vscode", "build", "target", "node_modules", "out")
         val NOISE = Regex("""^(changelog|changes|history|release[-_ ]?notes|releases)\b""", RegexOption.IGNORE_CASE) // every class name ever touched, no explanation
         val IDENT = Regex("""\b([A-Z][A-Za-z0-9]+)(?:\.([a-z][A-Za-z0-9]*)\()?""")
@@ -36,7 +38,8 @@ class DocExtractor(private val store: GraphStore) {
             if (c.origin == Origin.REPO) classes.getOrPut(c.id.substringAfterLast('.').substringAfterLast('$')) { ArrayList() } += c.id
         }
         var sections = 0
-        val files = root.walk().filter { p -> p.isRegularFile() && p.extension.equals("md", true) && !NOISE.containsMatchIn(p.name) && p.relativeTo(root).none { it.name in SKIP } }.take(MAX_FILES)
+        val skip = SKIP + Config.load(root).list("docs.skip_dirs")
+        val files = root.walk().filter { p -> p.isRegularFile() && p.extension.equals("md", true) && !NOISE.containsMatchIn(p.name) && p.relativeTo(root).none { it.name in skip } }.take(MAX_FILES)
         for (file in files) {
             val rel = file.relativeTo(root).toString().replace('\\', '/')
             val lines = runCatching { Files.readAllLines(file) }.getOrNull() ?: continue

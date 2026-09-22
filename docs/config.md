@@ -33,6 +33,7 @@ default_token_budget = 3000
 |---|---|---|
 | `deps.internal_jar_patterns` | `build` (resolve) | applied to the manifest after the build plugin wrote it; a file dependency without coordinates becomes `file:<jar name>:local` |
 | `deps.internal_group_prefixes` | the build plugins | Gradle also accepts `-Pjirrafe.internalGroupPrefixes=a,b`; the default is every group of the project's own modules |
+| `docs.skip_dirs` | `build` | directories or file names left out of Markdown doc extraction, in addition to the default `.git .jirrafe .claude .idea .vscode build target node_modules out` |
 | `deps.decompile` | `serve`, `knowledge` | `never` disables Vineflower entirely |
 | `knowledge.*` | `knowledge` | `--provider` on the command line overrides `provider`; `--dry-run` prints the prompts and sends nothing |
 | `serve.*` | `serve` | `--transport`, `--port`, `--token-budget` override |
