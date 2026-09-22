@@ -1,5 +1,8 @@
 package io.jirrafe.core.store
 
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+
 import io.jirrafe.core.model.Edge
 import io.jirrafe.core.model.EdgeKind
 import io.jirrafe.core.model.GraphSink
@@ -64,6 +67,13 @@ class GraphStore private constructor(private val conn: Connection) : GraphSink, 
         }
 
         /** Search terms for an fqn: separators become spaces and camelCase words are split out too. */
+        /** A node's annotations as words: the simple name of each and every value, `PreAuthorize hasRole ADMIN`. */
+        fun annotationTerms(attrs: String?): String {
+            val encoded = runCatching { attrs?.let { kotlinx.serialization.json.Json.parseToJsonElement(it) }?.jsonObject?.get(io.jirrafe.core.model.Attrs.ANNOTATIONS)?.jsonPrimitive?.content }.getOrNull() ?: return ""
+            val decoded = runCatching { io.jirrafe.core.model.Attrs.decodeAnnotations(encoded) }.getOrNull() ?: return ""
+            return " " + terms(decoded.entries.joinToString(" ") { (fqn, members) -> fqn.substringAfterLast('.') + " " + members.values.joinToString(" ") })
+        }
+
         fun terms(fqn: String): String {
             val words = fqn.replace(Regex("[.#$(),\\[\\]<>]+"), " ").trim()
             val camel = words.replace(Regex("([a-z0-9])([A-Z])"), "$1 $2")
@@ -176,11 +186,13 @@ class GraphStore private constructor(private val conn: Connection) : GraphSink, 
         conn.createStatement().use { it.execute("DELETE FROM nodes_fts") }
         conn.prepareStatement("INSERT INTO nodes_fts(id, terms, signature, doc) VALUES(?,?,?,?)").use { st ->
             conn.createStatement().use { s ->
-                s.executeQuery("SELECT id, fqn, signature, doc FROM nodes").use { rs ->
+                s.executeQuery("SELECT id, fqn, signature, doc, attrs FROM nodes").use { rs ->
                     var n = 0
                     while (rs.next()) {
                         st.setString(1, rs.getString(1))
-                        st.setString(2, terms(rs.getString(2)))
+                        // what an annotation says is searchable: "admin" is nowhere in a name, and everywhere in
+                        // @PreAuthorize("hasRole('ADMIN')") on the one method the question means
+                        st.setString(2, terms(rs.getString(2)) + annotationTerms(rs.getString(5)))
                         st.setString(3, rs.getString(3))
                         st.setString(4, rs.getString(4))
                         st.addBatch()

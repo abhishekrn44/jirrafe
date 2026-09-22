@@ -22,7 +22,8 @@ import kotlin.io.path.walk
  */
 class DocExtractor(private val store: GraphStore) {
     private companion object {
-        val SKIP = setOf(".git", ".jirrafe", "build", "target", "node_modules", "out")
+        // .claude holds the skill jirrafe installs, .idea and .vscode an editor's notes: none of them is the project's documentation
+        val SKIP = setOf(".git", ".jirrafe", ".claude", ".idea", ".vscode", "build", "target", "node_modules", "out")
         val NOISE = Regex("""^(changelog|changes|history|release[-_ ]?notes|releases)\b""", RegexOption.IGNORE_CASE) // every class name ever touched, no explanation
         val IDENT = Regex("""\b([A-Z][A-Za-z0-9]+)(?:\.([a-z][A-Za-z0-9]*)\()?""")
         const val MAX_FILES = 500

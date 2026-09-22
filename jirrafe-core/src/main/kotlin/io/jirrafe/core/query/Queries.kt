@@ -664,6 +664,7 @@ class Queries(
             n.kind in CODE -> 0
             n.kind == NodeKind.METHOD || n.kind == NodeKind.CONSTRUCTOR -> if ((n.endLine ?: 0) - (n.startLine ?: 0) >= 2) 0 else 1
             n.kind == NodeKind.FIELD -> 2
+            n.kind == NodeKind.DOC -> 1 // a README sentence after the code it describes: it took the first slot for "admin"
             else -> 0
         }
         fun find(text: String, limit: Int, kinds: Set<NodeKind>? = null): List<Node> {
@@ -675,13 +676,18 @@ class Queries(
         val stems = words.map { stem(it) }
         if (stems != words) find(stems.joinToString(" "), 30).forEachIndexed { i, n -> hit(n, 3.0 / (i + 1)) }
         // every pair of words: "reflection toString" finds reflectionToString when "based" defeats the full phrase
-        if (stems.size in 3..6) for (i in stems.indices) for (j in i + 1 until stems.size) {
+        // up to eight words: "what is the two step workflow for creating a user via admin" is seven, and "user admin"
+        // is the pair that names saveRequest and nothing else
+        if (stems.size in 3..8) for (i in stems.indices) for (j in i + 1 until stems.size) {
             find(stems[i] + " " + stems[j], 10).forEachIndexed { k, n -> hit(n, 1.5 / (k + 1)) }
         }
         for (w in words) {
-            find(w, 15).forEachIndexed { i, n -> hit(n, 1.0 / (i + 1)) }
+            // a word one or two things in the code carry says which thing the question means: "admin" is on one
+            // method, "user" is on everything. The flows already score a rare word three times; so does a body
+            val found = find(w, 15); val rare = if (found.size <= 2) 3.0 else 1.0
+            found.forEachIndexed { i, n -> hit(n, rare / (i + 1)) }
             val stem = stem(w)
-            if (stem != w) find(stem, 15).forEachIndexed { i, n -> hit(n, 0.8 / (i + 1)) }
+            if (stem != w) find(stem, 15).let { f -> val r = if (f.size <= 2) 3.0 else 1.0; f.forEachIndexed { i, n -> hit(n, 0.8 * r / (i + 1)) } }
         }
         // "which routes ...", "what topics ...": the question names a kind, so list that kind (filtered by the other words)
         val kindHits = ArrayList<Node>() // the kind the question named: these lead the matches whatever a name scored
@@ -760,14 +766,15 @@ class Queries(
         // how many flows each question word appears in: a word in every flow ("user", "request") says nothing about
         // which one the question means, a word in one ("signin") says everything
         val flowTokens = flows.keys.mapNotNull { store.node(it) }.associateWith { f ->
-            (f.fqn + " " + f.attrs["summary"].orEmpty().substringBefore("; external"))
+            // the entry's annotations too: @PreAuthorize(hasRole('ADMIN')) is what makes saveRequest the admin's flow
+            val entry = f.attrs["entry"]?.let { store.node(it) }
+            (f.fqn + " " + f.attrs["summary"].orEmpty().substringBefore("; external") + " " + (entry?.let { e -> Attrs.annotations(e).entries.joinToString(" ") { (k, v) -> k.substringAfterLast('.') + " " + v.values.joinToString(" ") } } ?: ""))
                 .split(Regex("""[^\p{Alnum}]+|(?<=[a-z0-9])(?=[A-Z])""")).map { it.lowercase() }.toHashSet()
         }
         fun matches(tokens: Set<String>, stem: String) = tokens.any { it.startsWith(stem) || (stem.length >= 4 && stem.startsWith(it) && it.length >= 3) }
         val stemFlows = stems.associateWith { s -> flowTokens.values.count { matches(it, s.lowercase()) } }
         fun coverage(f: Node): Int {
-            val text = f.fqn + " " + f.attrs["summary"].orEmpty().substringBefore("; external")
-            val tokens = text.split(Regex("""[^\p{Alnum}]+|(?<=[a-z0-9])(?=[A-Z])""")).map { it.lowercase() }.toHashSet()
+            val tokens = flowTokens[f] ?: emptySet() // one token set per flow, the entry's annotations included
             // "created" is a POST, "deleted" a DELETE: CRUD vocabulary names the verb, not the handler
             val verb = stems.any { HTTP_VERBS[it.lowercase()]?.let { v -> f.fqn.startsWith(v) } == true }
             // a word half the flows share is not evidence; the rest score, the rarest highest
@@ -778,8 +785,11 @@ class Queries(
             } + (if (verb) 1 else 0)
         }
         val kindOrder = listOf("route", "consumer", "job", "main")
+        // two flows covering the question alike ("creating a user": self-registration and the admin's request) are
+        // told apart by which one contains the best-scoring match; the tie went to store order before
         val rankedFlows = flows.entries.sortedWith(
             compareByDescending<Map.Entry<String, Double>> { store.node(it.key)?.let { f -> coverage(f) } ?: 0 }
+                .thenByDescending { e -> bestFlowStepsOf(store.node(e.key)).maxOfOrNull { hits[it] ?: 0.0 } ?: 0.0 }
                 .thenBy { kindOrder.indexOf(store.node(it.key)?.attrs?.get("entryKind")) }
                 .thenByDescending { it.value },
         )
@@ -1058,7 +1068,9 @@ class Queries(
                     val listedIds = kindHits.map { it.id }
                     // the repo's own code before a library stub or an annotation: `@GeneratedValue` and `lombok.Generated`
                     // outscored the method that generates a password, and an agent cannot open either of them
-                    val ranked = (listedIds + codeHits.map { it.key }.sortedBy { if (nodes[it]?.origin == Origin.REPO) 0 else 1 }).distinct().filter { it !in packed }
+                    // and a body before a one-line accessor, as the word search orders them: five getters and setters
+                    // of `password` filled the list while the method that generates one sat sixth
+                    val ranked = (listedIds + codeHits.map { it.key }.sortedWith(compareBy({ if (nodes[it]?.origin == Origin.REPO) 0 else 1 }, { nodes[it]?.let { n -> rank(n) } ?: 0 }))).distinct().filter { it !in packed }
                     // five, not three: "password generated" led with generateToken, and the generator, fourth by score,
                     // was cut from the list an agent would have followed it from
                     for (id in ranked.cap(listedIds.size + (if (pack.isNotEmpty()) 5 else maxOf(2, l / 2)))) {

@@ -26,6 +26,9 @@ object Attrs {
     fun annotations(node: Node): Map<String, Map<String, String>> =
         node.attrs[ANNOTATIONS]?.let { json.decodeFromString(annotations, it) } ?: emptyMap()
 
+    /** The decoded form of a stored [ANNOTATIONS] value, for a caller that has the attrs but not the node. */
+    fun decodeAnnotations(encoded: String): Map<String, Map<String, String>> = json.decodeFromString(annotations, encoded)
+
     fun encodeAnnotations(value: Map<String, Map<String, String>>): String? =
         if (value.isEmpty()) null else json.encodeToString(annotations, value)
 
