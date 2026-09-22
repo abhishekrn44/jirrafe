@@ -864,7 +864,9 @@ class Queries(
             if (listing) break
             if (walks == PACK_LEADS || spine.size >= PACK_MAX || c in spine) continue
             if (walks > 0 && (hits[c] ?: 0.0) < (hits[lead] ?: 0.0) * NEAR_MISS) break // a further chain only for a match that could as well be the answer
-            spine += walk(c, if (walks == 0) PACK_STEPS else PACK_STEPS_MORE).filter { it !in spine }
+            val steps = walk(c, if (walks == 0) PACK_STEPS else PACK_STEPS_MORE).filter { it !in spine }
+            if (System.getenv("JIRRAFE_DEBUG") == "1") System.err.println("debug: walk $walks from ${simpleName(c)} (%.2f) -> ${steps.map { simpleName(it) }}".format(hits[c] ?: 0.0))
+            spine += steps
             walks++
         }
         if (spine.size > PACK_MAX) spine.subList(PACK_MAX, spine.size).clear()
