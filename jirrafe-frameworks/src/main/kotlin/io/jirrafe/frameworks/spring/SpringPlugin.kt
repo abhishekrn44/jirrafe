@@ -46,6 +46,7 @@ class SpringPlugin : FrameworkPlugin {
             configBindings()
             jpa()
             listeners()
+            rawConsumers()
             producers()
             remoteCalls()
             scheduled()
@@ -405,10 +406,43 @@ class SpringPlugin : FrameworkPlugin {
                     PRODUCERS.entries.firstOrNull { (prefix, _) -> target.startsWith(prefix) }?.value
                 }
                 if (templates.isEmpty()) continue
-                val candidates = Attrs.strings(m).filter { TOPIC_NAME.matches(it) }.toSet()
+                val candidates = Attrs.strings(m).filter { TOPIC_NAME.matches(it) }.toSet().ifEmpty { topicGetters(m) }
                 val chosen = candidates.filter { it in knownTopics }.ifEmpty { candidates }
                 for (name in chosen) {
                     store.edge(Edge(m.id, topic(name, templates.first(), m), EdgeKind.PRODUCES_TO, Resolution.HEURISTIC, 1.0 / chosen.size))
+                }
+            }
+        }
+
+        /**
+         * A topic named through configuration: `appProperties.getMatchingEngineCommandTopic()`, a repo getter whose
+         * name says topic, queue or destination. The sender and the subscriber call the same getter, so its property
+         * name is the topic's identity even where its value is only known at run time.
+         */
+        private fun topicGetters(m: Node): Set<String> = store.edgesFrom(m.id, EdgeKind.CALLS).map { it.to }
+            .filter { t -> store.node(t)?.origin == Origin.REPO && Regex("(?i)(topic|queue|destination)").containsMatchIn(t.substringAfter('#').substringBefore('(')) }
+            .map { t -> t.substringAfter('#').substringBefore('(').removePrefix("get").replaceFirstChar { it.lowercase() } }.toSet()
+
+        /**
+         * A consumer built on the plain client rather than @KafkaListener: `consumer.subscribe(topic)` in one method,
+         * records arriving through `poll` in another (gitbitex's MatchingEngineThread#doPoll). The polling method is
+         * the entry point of what the topic delivers, so it is the one that consumes it.
+         */
+        private fun rawConsumers() {
+            for (m in store.nodes(NodeKind.METHOD)) {
+                if (m.origin != Origin.REPO) continue
+                val system = store.edgesFrom(m.id, EdgeKind.CALLS).map { it.to }.firstNotNullOfOrNull { t -> SUBSCRIBERS.entries.firstOrNull { t.startsWith(it.key) }?.value } ?: continue
+                val names = Attrs.strings(m).filter { TOPIC_NAME.matches(it) }.toSet().ifEmpty { topicGetters(m) }
+                if (names.isEmpty()) continue
+                val cls = m.id.substringBefore('#')
+                // the class's own polling method, or one it inherits: a subclass polls in doPoll, the base class subscribes
+                val family = generateSequence(cls) { c -> store.edgesFrom(c, EdgeKind.EXTENDS).firstOrNull()?.to }.take(4).toList()
+                val poller = (listOf(cls) + store.edgesTo(cls, EdgeKind.EXTENDS).map { it.from } + family).distinct()
+                    .flatMap { c -> store.edgesFrom(c, EdgeKind.CONTAINS).map { it.to } }
+                    .firstOrNull { mm -> store.edgesFrom(mm, EdgeKind.CALLS).any { e -> POLLS.any { e.to.startsWith(it) } } }
+                for (name in names) {
+                    knownTopics += name
+                    store.edge(Edge(poller ?: m.id, topic(name, system, m), EdgeKind.CONSUMES_FROM, Resolution.HEURISTIC))
                 }
             }
         }
@@ -562,7 +596,19 @@ class SpringPlugin : FrameworkPlugin {
             "org.springframework.jms.core.JmsTemplate#" to "jms",
             "org.springframework.amqp.rabbit.core.RabbitTemplate#" to "rabbit",
             "org.springframework.cloud.stream.function.StreamBridge#" to "stream",
+            // the plain clients, which an application uses without Spring Kafka or Spring AMQP
+            "org.apache.kafka.clients.producer.KafkaProducer#send" to "kafka",
+            "org.apache.kafka.clients.producer.Producer#send" to "kafka",
+            "com.rabbitmq.client.Channel#basicPublish" to "rabbit",
         )
+        /** A subscription on a plain client: the method that makes it consumes the named topic. */
+        val SUBSCRIBERS = mapOf(
+            "org.apache.kafka.clients.consumer.KafkaConsumer#subscribe" to "kafka",
+            "org.apache.kafka.clients.consumer.Consumer#subscribe" to "kafka",
+            "com.rabbitmq.client.Channel#basicConsume" to "rabbit",
+        )
+        /** Where a plain consumer's records arrive, when it is not the method that subscribed. */
+        val POLLS = listOf("org.apache.kafka.clients.consumer.KafkaConsumer#poll", "org.apache.kafka.clients.consumer.Consumer#poll")
         val HTTP_CLIENTS = listOf(
             "org.springframework.web.client.RestTemplate#", "org.springframework.web.client.RestClient",
             "org.springframework.web.reactive.function.client.WebClient", "org.springframework.web.client.RestOperations#",

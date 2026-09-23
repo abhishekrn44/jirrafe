@@ -61,6 +61,13 @@ internal object Flows {
                 if (trivial(g, e.to)) continue
                 visit(e.to, depth + 1, e.resolution)
             }
+            // across a topic: an order is placed by a controller and matched by the thread that consumes the command
+            // topic, and nothing calls one from the other. A topic one or two consumers read continues the flow into
+            // them; one that many read is a broadcast, and following every reader would drown the request
+            for (e in g.outgoing[id].orEmpty().filter { it.kind == EdgeKind.PRODUCES_TO }) {
+                val readers = consumers(g)[e.to].orEmpty()
+                if (readers.size in 1..2) for (r in readers) visit(r, depth + 1, Resolution.HEURISTIC)
+            }
         }
         visit(entry.id, 0, Resolution.EXACT)
         val nodes = steps.mapNotNull { g.nodes[it.id] }
@@ -71,6 +78,12 @@ internal object Flows {
             external = external.take(10),
         )
     }
+
+    private var consumerIndex: Pair<ClassGraph, Map<String, List<String>>>? = null
+
+    /** Topic id -> the methods that consume it, computed once per graph. */
+    private fun consumers(g: ClassGraph): Map<String, List<String>> = consumerIndex?.takeIf { it.first === g }?.second
+        ?: g.outgoing.values.flatten().filter { it.kind == EdgeKind.CONSUMES_FROM }.groupBy({ it.to }, { it.from }).also { consumerIndex = g to it }
 
     /** Constructors and leaf accessors add nothing to a flow's story. */
     private fun trivial(g: ClassGraph, id: String): Boolean {
