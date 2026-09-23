@@ -78,6 +78,8 @@ class Queries(
         private const val FIELDS_MAX = 12
         private const val WHOLE_FILE_TOKENS = 700L // a file this size costs less whole than the same facts as fragments
         private const val CARD_MEMBERS = 30
+        private const val BREADTH_CLASSES = 5 // classes shown when the question names a subsystem rather than a mechanism
+        private const val BREADTH_MEMBERS = 15 // member lines per class in that survey
         /** A question about a workflow: its second step is not called by its first, it reads what the first wrote. */
         private val WORKFLOW = Regex("\\b(workflow|steps?|process|lifecycle|end[ -]to[ -]end)\\b")
         private const val NEAR_MISS = 0.5 // a second match scoring this fraction of the first gets its own chain; new tokens cost twelve times re-read ones
@@ -901,6 +903,19 @@ class Queries(
                 spine += steps
             }
         }
+        // A question that names a subsystem ("how does HTML work", "the snapshot generator") is answered by its parts,
+        // not by one path through two of them: a blind judge preferred the answer that toured HtmlElement, HtmlNode,
+        // DocumentToHtml and HtmlWriter over one that traced convertToHtml -> collapse -> isMatch, however precise.
+        // When no flow covers the question, the classes its words name (and what extends them) are the answer: each
+        // as a card, its members listed and its busiest method shown
+        // Only where no flow reaches the question: OrderController, OrderService and OrderRepository share a word too,
+        // and they are one request's path, which the chain answers
+        val breadth = if (!listing && !WORKFLOW.containsMatchIn(question.lowercase()) && rankedFlows.isEmpty()) subsystem(stems) else emptyList()
+        if (breadth.isNotEmpty()) {
+            spine.clear()
+            for (c in breadth) busiest(c)?.let { spine += it }
+            if (System.getenv("JIRRAFE_DEBUG") == "1") System.err.println("debug: breadth over ${breadth.map { simpleName(it.id) }}")
+        }
         if (spine.size > PACK_MAX) spine.subList(PACK_MAX, spine.size).clear()
         if (System.getenv("JIRRAFE_DEBUG") == "1") System.err.println("debug: spine=${spine.map { simpleName(it) }}")
         // Whole bodies. A cut at thirty lines was an invitation to fetch the rest, and that turn costs more than the
@@ -959,9 +974,9 @@ class Queries(
         // was written; a large one never is. So: the whole file when it is small, its card when it is not, and the
         // chain of bodies only when the answer is genuinely spread.
         val spineFiles = spine.mapNotNull { store.node(it)?.file }.distinct()
-        val concentrated = spineFiles.size in 1..2 && wiringBodies.none { it !in spine }
+        val concentrated = (spineFiles.size in 1..2 || breadth.isNotEmpty()) && wiringBodies.none { it !in spine }
         val fileTokens = spineFiles.associateWith { f -> runCatching { java.nio.file.Files.size(java.nio.file.Path.of(f)) / 4 }.getOrDefault(Long.MAX_VALUE) }
-        val whole = if (concentrated) spineFiles.filter { (fileTokens[it] ?: Long.MAX_VALUE) <= WHOLE_FILE_TOKENS } else emptyList()
+        val whole = if (concentrated && breadth.isEmpty()) spineFiles.filter { (fileTokens[it] ?: Long.MAX_VALUE) <= WHOLE_FILE_TOKENS } else emptyList()
         val cards = if (concentrated) spineFiles.filter { it !in whole } else emptyList()
         // a one-line delegation adds a header, a citation and a line of code to say what its caller already showed
         val trivial = { id: String -> store.node(id)?.let { (it.endLine ?: 0) - (it.startLine ?: 0) <= 1 && it.id != lead } == true }
@@ -997,7 +1012,7 @@ class Queries(
                 .filter { it.kind == NodeKind.METHOD || it.kind == NodeKind.CONSTRUCTOR }
                 .sortedBy { it.startLine ?: Int.MAX_VALUE }
                 .map { "${it.startLine ?: 0} ${shortName(it)}" }
-            Triple(cls, members.take(CARD_MEMBERS), spine.filter { store.node(it)?.file == f })
+            Triple(cls, members.take(if (breadth.isEmpty()) CARD_MEMBERS else BREADTH_MEMBERS), spine.filter { store.node(it)?.file == f })
         }
         // The data the chain moves, as a field list each: on a CRUD service the entities and DTOs are the domain, and
         // "what does it return" is answered by a shape, not a body. Types the packed classes use, model layer only,
@@ -1087,7 +1102,7 @@ class Queries(
                     })
                 })
                 if (cardFiles.isNotEmpty()) put("cards", buildJsonArray {
-                    for ((cls, members, matched) in cardFiles) add(buildJsonObject {
+                    for ((cls, members, matched) in cardFiles.cap(if (breadth.isEmpty()) cardFiles.size else maxOf(3, minOf(BREADTH_CLASSES, l)))) add(buildJsonObject {
                         put("id", cls.id); at(cls)?.let { put("at", it) }
                         classHeader(cls.id + "#")?.let { put("class", it) }
                         fieldsOf(cls.id, matched.mapNotNull { id -> nodes[id]?.let { sources?.read(it, 0)?.text } }.joinToString("\n")).takeIf { it.isNotEmpty() }
@@ -1193,6 +1208,29 @@ class Queries(
         }?.let { return listOf(it) }
         return emptyList()
     }
+
+    /** The classes a question's words name, and what extends or implements them: three or more, or none. */
+    private fun subsystem(stems: List<String>): List<Node> {
+        val words = stems.map { it.lowercase() }.filter { it.length >= 3 }.distinct()
+        if (words.isEmpty()) return emptyList()
+        val classes = listOf(NodeKind.CLASS, NodeKind.INTERFACE, NodeKind.ENUM, NodeKind.RECORD).flatMap { store.nodes(it) }
+            .filter { it.origin == Origin.REPO && it.attrs["test"] != "true" && it.file != null && '$' !in it.id }
+        // the classes that carry the most of the question's words: "snapshot generator" is HibernateSnapshotGenerator,
+        // not every class named Hibernate
+        val count = classes.associateWith { c -> val n = simpleName(c.id).lowercase(); words.count { it in n } }
+        val top = count.values.maxOrNull() ?: 0
+        if (top == 0) return emptyList()
+        val named = count.filter { it.value == top }.keys
+        val family = (named + named.flatMap { n -> store.edgesTo(n.id).filter { it.kind == EdgeKind.EXTENDS || it.kind == EdgeKind.IMPLEMENTS }.mapNotNull { store.node(it.from) } })
+            .filter { it.origin == Origin.REPO && it.attrs["test"] != "true" && it.file != null }.distinctBy { it.id }
+        if (family.size < 3) return emptyList() // one class is a mechanism, and the chain answers it
+        return family.sortedByDescending { c -> store.edgesTo(c.id).count { it.kind != EdgeKind.CONTAINS } }.take(BREADTH_CLASSES)
+    }
+
+    /** The member that does a class's work: the most calls out, then the longest body; a one-liner never. */
+    private fun busiest(c: Node): String? = store.edgesFrom(c.id, EdgeKind.CONTAINS).mapNotNull { store.node(it.to) }
+        .filter { (it.kind == NodeKind.METHOD || it.kind == NodeKind.CONSTRUCTOR) && (it.endLine ?: 0) - (it.startLine ?: 0) >= 2 }
+        .maxWithOrNull(compareBy({ store.edgesFrom(it.id, EdgeKind.CALLS).count() }, { (it.endLine ?: 0) - (it.startLine ?: 0) }))?.id
 
     private fun chain(start: String?): List<String> {
         var current = start ?: return emptyList()
