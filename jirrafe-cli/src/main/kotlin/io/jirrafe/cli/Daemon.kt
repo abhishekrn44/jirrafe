@@ -25,14 +25,16 @@ import kotlin.io.path.exists
  * A query answered from a fresh JVM pays two seconds of start-up before the graph is even open; an agent
  * asks two or three times per question. The first `jirrafe query` in a project answers in-process and leaves
  * a daemon behind holding the graph open; every later query is a socket round-trip on localhost. The daemon
- * reopens the graph when `graph.db` changes and exits after an idle hour. Nothing else changes: same answers,
+ * reopens the graph when `graph.db` changes and exits after ten idle minutes. Nothing else changes: same answers,
  * same text, same command line.
  *
  * Wire format: one line of arguments as JSON `{"tool":..,"texts":[..],..}` in, the answer text out, then close.
  * A token in `.jirrafe/daemon.token` must accompany every request; the port is in `.jirrafe/daemon.port`.
  */
 object Daemon {
-    private const val IDLE_MS = 60L * 60 * 1000
+    // ten minutes, not an hour: one JVM per project an agent has touched, a few hundred MB each, stayed an hour
+    // after the questions stopped; ten minutes still covers the gaps between questions in one session
+    private const val IDLE_MS = 10L * 60 * 1000
 
     /** The answer for one query, from whatever process holds the graph. */
     class Request(val tool: String, val texts: List<String>, val budget: Int?, val source: Boolean, val depth: Int?, val diff: Boolean, val lines: IntRange?, val format: String, val licenses: Boolean)
@@ -123,7 +125,7 @@ object Daemon {
 
     // ---- server side ------------------------------------------------------------------------------
 
-    /** Holds the graph open and answers on localhost until idle for an hour or the graph file is replaced by a rebuild. */
+    /** Holds the graph open and answers on localhost until idle for ten minutes or the graph file is replaced by a rebuild. */
     fun serve(root: Path) {
         val out = root.resolve(".jirrafe")
         val db = out.resolve("graph.db")
