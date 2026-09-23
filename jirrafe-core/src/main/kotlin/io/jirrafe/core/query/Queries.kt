@@ -864,6 +864,8 @@ class Queries(
             else -> chain(from).ifEmpty { listOf(from) }
         }.filter { it == from || packable(it) }.take(steps)
         // each further match adds a chain only where it leads somewhere the first did not
+        // with no flow to start from, the entry that reaches the match leads the answer, as a flow's entry would
+        val entry = if (rankedFlows.isEmpty() && lead != null) climb(lead).firstOrNull()?.takeIf { owner(it) != owner(lead) } else null
         val spine = ArrayList<String>()
         var walks = 0
         var firstWalk = 0 // where the lead's own chain ends: a workflow's next step goes in there, ahead of a mere runner-up
@@ -871,8 +873,8 @@ class Queries(
             if (listing) break
             if (walks == PACK_LEADS || spine.size >= PACK_MAX || c in spine) continue
             if (walks > 0 && (hits[c] ?: 0.0) < (hits[lead] ?: 0.0) * NEAR_MISS) break // a further chain only for a match that could as well be the answer
-            val steps = walk(c, if (walks == 0) PACK_STEPS else PACK_STEPS_MORE).filter { it !in spine }
-            if (System.getenv("JIRRAFE_DEBUG") == "1") System.err.println("debug: walk $walks from ${simpleName(c)} (%.2f) -> ${steps.map { simpleName(it) }}".format(hits[c] ?: 0.0))
+            val steps = (if (walks == 0 && entry != null) listOf(entry) else emptyList()) + walk(c, if (walks == 0) PACK_STEPS else PACK_STEPS_MORE).filter { it !in spine }
+            if (System.getenv("JIRRAFE_DEBUG") == "1") System.err.println("debug: walk $walks from ${simpleName(c)} (%.2f) entry=${entry?.let { simpleName(it) }} -> ${steps.map { simpleName(it) }}".format(hits[c] ?: 0.0))
             spine += steps
             walks++
             if (walks == 1) firstWalk = spine.size
@@ -1156,6 +1158,31 @@ class Queries(
      */
     private fun bestFlowStepsOf(flow: Node?): List<String> = flow?.attrs?.get("steps")
         ?.let { s -> json.parseToJsonElement(s).jsonArray.map { it.jsonObject["id"]!!.jsonPrimitive.content } }.orEmpty()
+
+    /**
+     * The repo method that reaches [id] from above, and the path down to it. A library has no route, consumer or job
+     * to precompute a flow from, so the chain walked only downwards: from `Html#isMatch`, a private helper that
+     * matched the question by name, it found sibling helpers while the mechanism starts at `convertToHtml`. Climbing
+     * the callers finds that entry, preferring the one nothing else calls.
+     */
+    private fun climb(id: String): List<String> {
+        // breadth first, not a single line up: the first caller of a helper is often an anonymous visitor that nothing
+        // calls, a dead end, while the entry sits four hops away through a sibling
+        val seen = LinkedHashSet<String>(); var frontier = listOf(id)
+        val levels = ArrayList<List<String>>()
+        repeat(CHAIN_STEPS) {
+            val next = frontier.flatMap { store.edgesTo(it, EdgeKind.CALLS).map { e -> e.from } }
+                .filter { c -> c != id && seen.add(c) && store.node(c)?.let { it.origin == Origin.REPO && it.attrs["test"] != "true" && it.file != null } == true }
+            if (next.isEmpty()) return@repeat
+            levels += next; frontier = next
+        }
+        // the highest named caller reached: an anonymous visitor is a dead end, and the public wrapper above the
+        // entry is usually one line, so the top of a four-hop climb is where the mechanism starts
+        for (level in levels.asReversed()) level.firstOrNull { c ->
+            '$' !in owner(c) && store.node(c)?.let { (it.endLine ?: 0) - (it.startLine ?: 0) >= 1 } == true
+        }?.let { return listOf(it) }
+        return emptyList()
+    }
 
     private fun chain(start: String?): List<String> {
         var current = start ?: return emptyList()
