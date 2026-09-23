@@ -943,6 +943,16 @@ class Queries(
         }
         val dependencies = manifest?.modules.orEmpty().flatMap { m -> m.configurations.flatMap { it.artifacts } }.filter { a -> families.any { f -> f.artifacts.any { w -> (a.name ?: "").contains(w, ignoreCase = true) } } }
             .map { "${it.group}:${it.name}:${it.version}" }.distinct().sortedBy { if ("starter" in it) 0 else 1 }.take(5)
+        // What ServiceLoader finds, nothing calls: HibernateSnapshotGenerator's ten subclasses are registered in
+        // META-INF/services and reach Liquibase only through that file, so no chain from the question gets there.
+        // One line per services file that registers a class the answer packs, or a subclass of one
+        val packedOwners = spine.map { owner(it).substringBefore('$') }.toSet()
+        for ((file, iface, impls) in registrations()) {
+            val hits = impls.filter { impl -> impl in packedOwners || store.edgesFrom(impl).any { (it.kind == EdgeKind.EXTENDS || it.kind == EdgeKind.IMPLEMENTS) && it.to in packedOwners } }
+            if (hits.isEmpty()) continue
+            val site = packedOwners.firstOrNull { o -> hits.any { h -> h != o && store.edgesFrom(h).any { it.to == o } } }?.let { store.node(it) } ?: store.node(hits.first()) ?: continue
+            wiring += site to "ServiceLoader registers ${hits.size} as ${iface.substringAfterLast('.')} in $file: " + hits.joinToString(", ") { it.substringAfterLast('.') }
+        }
         val wiringSites = wiring.distinctBy { it.first.id }.sortedBy { it.first.file + ":" + it.first.startLine }.take(WIRING_SITES)
         // Where the answer lives decides what to send. Nine questions in ten are answered inside one or two files.
         // A small file read whole is cheaper than the same facts cut into fragments, and it reads in the order it
@@ -1228,6 +1238,18 @@ class Queries(
         return vocabulary.entries
             .filter { (t, _) -> want.any { w -> t != w && (t.startsWith(w.take(4)) || w.startsWith(t.take(4)) || (w.length >= 5 && t.contains(w.take(5)))) } }
             .sortedByDescending { it.value }.map { it.key }.take(20)
+    }
+
+    /** `META-INF/services/<interface>` files under the project's resource directories: (relative path, interface, implementations). */
+    private val registrations: () -> List<Triple<String, String, List<String>>> = run {
+        var cached: List<Triple<String, String, List<String>>>? = null
+        { cached ?: manifest?.modules.orEmpty().flatMap { it.resourceDirs }.flatMap { dir ->
+            val services = java.nio.file.Path.of(dir, "META-INF", "services")
+            if (!java.nio.file.Files.isDirectory(services)) emptyList() else java.nio.file.Files.list(services).use { files -> files.toList() }.map { f ->
+                val impls = java.nio.file.Files.readAllLines(f).map { it.substringBefore('#').trim() }.filter { it.isNotEmpty() }
+                Triple(relative(f.toString()), f.fileName.toString(), impls)
+            }
+        }.also { cached = it } }
     }
 
     /** `@PreAuthorize(hasRole('ADMIN'))`: one annotation on a node with its values, as it reads in the source. */
