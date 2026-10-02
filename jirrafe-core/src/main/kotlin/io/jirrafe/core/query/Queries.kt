@@ -1326,13 +1326,22 @@ class Queries(
             .filter { f -> val sig = f.signature.orEmpty(); !("static" in sig && "final" in sig) && !sig.contains("Logger") && !f.id.endsWith("#class") }
             .filter { f -> Regex("\\b" + Regex.escape(f.id.substringAfterLast('#')) + "\\b").containsMatchIn(usedIn) } // only what the shown bodies use
             .sortedBy { it.startLine ?: Int.MAX_VALUE }
+        // an injected interface says nothing about behaviour; the `@Bean` method that provides it does, so name it and what it returns
+        val provided = store.edgesFrom(classId, EdgeKind.INJECTS).mapNotNull { e ->
+            val bean = store.node(e.to) ?: return@mapNotNull null
+            val prov = bean.attrs["provider"]?.let { store.node(it) }?.takeIf { it.kind == NodeKind.METHOD } ?: return@mapNotNull null
+            val ret = sources?.read(prov, 0)?.text?.lines()?.map { it.trim() }?.lastOrNull { it.startsWith("return ") }?.removePrefix("return ")?.trimEnd(';')?.take(120)
+            (bean.attrs["type"] ?: return@mapNotNull null) to
+                "<- @Bean ${simpleName(owner(prov.id))}#${simpleName(prov.id)}()" + (ret?.let { " returns $it" } ?: "") + (at(prov)?.let { " @ $it" } ?: "")
+        }.toMap()
         return fields.take(FIELDS_MAX).mapNotNull { f ->
             val ann = Attrs.annotations(f).keys.filter { !it.startsWith("java.lang.") && !it.startsWith("lombok.") }.joinToString(" ") { annotationText(f, it) }
             val text = sources?.read(f, 0)?.text?.lines()?.map { it.trim() }?.filter { it.isNotEmpty() && !it.startsWith("@") }?.joinToString(" ")?.trimEnd(';')?.take(200)
                 ?: f.signature?.replace(PACKAGE, "") ?: f.id.substringAfterLast('#')
-            // decisive: an initialiser or a value-binding annotation; a bare injection is already visible in the body's calls
-            if (decisiveOnly && '=' !in text && ann.split(' ').none { it.isNotEmpty() && it != "@Autowired" && it != "@Inject" }) return@mapNotNull null
-            listOf(ann, text).filter { it.isNotEmpty() }.joinToString(" ")
+            val bean = provided[f.signature?.substringAfter(": ", "")?.substringBefore('<')?.trim()]
+            // decisive: an initialiser, a provider, or a value-binding annotation; a bare injection is already visible in the body's calls
+            if (decisiveOnly && bean == null && '=' !in text && ann.split(' ').none { it.isNotEmpty() && it != "@Autowired" && it != "@Inject" }) return@mapNotNull null
+            listOf(ann, text, bean.orEmpty()).filter { it.isNotEmpty() }.joinToString(" ")
         }
     }
 
