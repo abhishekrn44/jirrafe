@@ -106,7 +106,8 @@ object Install {
         |for the tests to run. If the answer has no code but lists `vocabulary`, ask again with those words.
         |
         |Answer from what the commands returned and cite its numbered lines; do not fetch a body already shown;
-        |where the answer is silent, say so rather than fill it in. Read source files only for something the graph
+        |where the answer is silent, say so rather than fill it in, and never assume a framework default (BCrypt,
+        |H2, in-memory): the `fields` line or a `@Bean` body decides it. Read source files only for something the graph
         |did not return. When an answer says `stale`, run $index first. The graph is not rebuilt by $client.
         |""".trimMargin()
     }
@@ -160,7 +161,9 @@ object Install {
         |   straight from the numbered lines. The code shown is the source; do not fetch a body that is already
         |   under `## code`. If there is no `## code` and a `vocabulary` line, the question's words are not the
         |   code's: ask again with the listed words that fit. Answer only from what the commands returned; where
-        |   they are silent, say so rather than fill it in.
+        |   they are silent, say so rather than fill it in. Never fill a gap with a framework default: which
+        |   encoder, database, cache or provider is in use is decided by a `fields` initialiser or a `@Bean` body,
+        |   so if neither is shown, fetch it or write "not shown" rather than assume BCrypt, H2 or in-memory.
         |3. Fetch more only in three cases, and in one call: a body that ends with `... cut at line N` continues
         |   with $more; ids listed as `pending`; an id the answer names but does not show. $sources returns
         |   several bodies at once. $node gives one node with its callers and callees. Classes inside internal

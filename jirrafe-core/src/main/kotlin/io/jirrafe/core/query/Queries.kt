@@ -36,7 +36,7 @@ class Queries(
     companion object {
         val json = Json { encodeDefaults = false }
         const val DEFAULT_BUDGET = 3000 // a ceiling; the measured answers are well under it, and the bodies shrink last
-        private val LIMITS = intArrayOf(Int.MAX_VALUE, 40, 20, 15, 10, 7, 5, 3, 2, 1) // 20 -> 10 halved every section and left half the budget unused
+        private val LIMITS = intArrayOf(Int.MAX_VALUE, 40, 20, 15, 10, 7, 5, 4, 3, 2, 1) // 20 -> 10 halved every section and left half the budget unused; 5 -> 3 turned a 2000 budget into an 1128-token answer
         private val STRUCTURE = setOf(EdgeKind.CONTAINS, EdgeKind.MEMBER_OF_COMMUNITY, EdgeKind.STEP_OF_FLOW, EdgeKind.HAS_FINDING, EdgeKind.IMPORTS, EdgeKind.TESTS)
         private val CODE = setOf(NodeKind.CLASS, NodeKind.INTERFACE, NodeKind.ENUM, NodeKind.RECORD, NodeKind.ANNOTATION)
         private const val DISPATCH_FLOOR = 0.2 // 1/n: a call site with more than five implementations names none of them
@@ -1081,7 +1081,10 @@ class Queries(
                         put("id", p.id); put("at", "${relative(p.source.file)}:${p.source.startLine}")
                         classHeader(p.id)?.let { put("class", it) } // the declaration the body lives in: its annotations and supertypes
                         val cls = owner(p.id).substringBefore('$')
-                        if (l >= 5 && bodies.firstOrNull { owner(it.id).substringBefore('$') == cls } === p) fieldsOf(cls, bodies.filter { owner(it.id).substringBefore('$') == cls }.joinToString("\n") { it.text }).takeIf { it.isNotEmpty() }?.let { fs -> put("fields", buildJsonArray { for (f in fs) add(JsonPrimitive(f)) }) }
+                        // at every level: a field's initialiser decides behaviour (`new Argon2PasswordEncoder(...)`) and was cut exactly
+                        // on the busy answers where the budget binds; below level 5 only such fields, since five
+                        // `@Autowired private XRepo xRepo` lines cost a spine body and say nothing the body's calls don't
+                        if (bodies.firstOrNull { owner(it.id).substringBefore('$') == cls } === p) fieldsOf(cls, bodies.filter { owner(it.id).substringBefore('$') == cls }.joinToString("\n") { it.text }, decisiveOnly = l < 5).takeIf { it.isNotEmpty() }?.let { fs -> put("fields", buildJsonArray { for (f in fs) add(JsonPrimitive(f)) }) }
                         if (p.source.decompiled) put("decompiled", true)
                         val callers = cleanEdges(p.id, store.edgesTo(p.id)) { it.from }.size
                         if (callers > 0) put("callers", callers)
@@ -1315,7 +1318,7 @@ class Queries(
      * it was built with, the repository it was given, live here and nowhere a body shows. Read from the source
      * when a reader is at hand (the initialiser is the fact), the signature otherwise; constants and loggers left out.
      */
-    private fun fieldsOf(classId: String, usedIn: String): List<String> {
+    private fun fieldsOf(classId: String, usedIn: String, decisiveOnly: Boolean = false): List<String> {
         val c = store.node(classId) ?: return emptyList()
         if (c.kind !in CODE || c.origin == Origin.EXTERNAL) return emptyList()
         val fields = store.edgesFrom(classId, EdgeKind.CONTAINS).mapNotNull { store.node(it.to) }
@@ -1323,10 +1326,12 @@ class Queries(
             .filter { f -> val sig = f.signature.orEmpty(); !("static" in sig && "final" in sig) && !sig.contains("Logger") && !f.id.endsWith("#class") }
             .filter { f -> Regex("\\b" + Regex.escape(f.id.substringAfterLast('#')) + "\\b").containsMatchIn(usedIn) } // only what the shown bodies use
             .sortedBy { it.startLine ?: Int.MAX_VALUE }
-        return fields.take(FIELDS_MAX).map { f ->
+        return fields.take(FIELDS_MAX).mapNotNull { f ->
             val ann = Attrs.annotations(f).keys.filter { !it.startsWith("java.lang.") && !it.startsWith("lombok.") }.joinToString(" ") { annotationText(f, it) }
             val text = sources?.read(f, 0)?.text?.lines()?.map { it.trim() }?.filter { it.isNotEmpty() && !it.startsWith("@") }?.joinToString(" ")?.trimEnd(';')?.take(200)
                 ?: f.signature?.replace(PACKAGE, "") ?: f.id.substringAfterLast('#')
+            // decisive: an initialiser or a value-binding annotation; a bare injection is already visible in the body's calls
+            if (decisiveOnly && '=' !in text && ann.split(' ').none { it.isNotEmpty() && it != "@Autowired" && it != "@Inject" }) return@mapNotNull null
             listOf(ann, text).filter { it.isNotEmpty() }.joinToString(" ")
         }
     }
