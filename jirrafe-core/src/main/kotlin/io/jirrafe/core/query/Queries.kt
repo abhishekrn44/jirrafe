@@ -119,6 +119,16 @@ class Queries(
         return if (rootNorm.isNotEmpty() && f.startsWith(rootNorm, ignoreCase = true)) f.substring(rootNorm.length).trimStart('/') else f
     }
 
+    /** Where an annotation sits: a declaration starts at its first annotation, which may be another one
+     *  (`@Configuration` on line 21, `@EnableMethodSecurity` on 22), and a wrong line is a wrong claim. */
+    private fun annotationAt(site: Node, declares: String): String? {
+        val name = declares.takeIf { it.startsWith("@") }?.drop(1)?.takeWhile { it.isLetterOrDigit() || it == '_' } ?: return at(site)
+        val start = site.startLine ?: return at(site)
+        val lines = sources?.read(site, 0)?.text?.lines() ?: return at(site)
+        val i = lines.indexOfFirst { it.trimStart().startsWith("@$name") && !it.trimStart().drop(name.length + 1).firstOrNull().let { c -> c != null && (c.isLetterOrDigit() || c == '_') } }
+        return if (i < 0) at(site) else "${relative(site.file ?: return at(site))}:${start + i}"
+    }
+
     private fun at(n: Node): String? = n.file?.let { f ->
         val rel = relative(f)
         n.startLine?.let { "$rel:$it" } ?: rel
@@ -1123,7 +1133,7 @@ class Queries(
                 })
                 // complete for the annotations named: the graph knows every site, which is what lets an agent stop looking
                 if (l >= 5 && wiringSites.isNotEmpty()) put("wiring", buildJsonArray {
-                    for ((site, text) in wiringSites.cap(maxOf(4, l))) add(buildJsonObject { put("id", site.id); at(site)?.let { put("at", it) }; put("declares", text) })
+                    for ((site, text) in wiringSites.cap(maxOf(4, l))) add(buildJsonObject { put("id", site.id); annotationAt(site, text)?.let { put("at", it) }; put("declares", text) })
                 })
                 if (l >= 5 && dependencies.isNotEmpty()) put("dependencies", buildJsonArray { for (d in dependencies) add(JsonPrimitive(d)) })
                 // a thin answer says which of the code's own words are near the question, so the next ask lands
