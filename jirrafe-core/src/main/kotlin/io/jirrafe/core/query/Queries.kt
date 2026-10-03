@@ -1091,10 +1091,10 @@ class Queries(
                         put("id", p.id); put("at", "${relative(p.source.file)}:${p.source.startLine}")
                         classHeader(p.id)?.let { put("class", it) } // the declaration the body lives in: its annotations and supertypes
                         val cls = owner(p.id).substringBefore('$')
-                        // at every level: a field's initialiser decides behaviour (`new Argon2PasswordEncoder(...)`) and was cut exactly
-                        // on the busy answers where the budget binds; below level 5 only such fields, since five
-                        // `@Autowired private XRepo xRepo` lines cost a spine body and say nothing the body's calls don't
-                        if (bodies.firstOrNull { owner(it.id).substringBefore('$') == cls } === p) fieldsOf(cls, bodies.filter { owner(it.id).substringBefore('$') == cls }.joinToString("\n") { it.text }, decisiveOnly = l < 5).takeIf { it.isNotEmpty() }?.let { fs -> put("fields", buildJsonArray { for (f in fs) add(JsonPrimitive(f)) }) }
+                        // under every body, the fields that body uses: a field's initialiser decides behaviour (new Argon2PasswordEncoder(..)),
+                        // and a model shown it once, 120 lines above the body that calls encoder.encode, wrote that the encoder's type is not shown;
+                        // below level 5 only such fields, since five bare @Autowired repository lines cost a spine body
+                        fieldsOf(cls, p.text, decisiveOnly = l < 5).takeIf { it.isNotEmpty() }?.let { fs -> put("fields", buildJsonArray { for (f in fs) add(JsonPrimitive(f)) }) }
                         if (p.source.decompiled) put("decompiled", true)
                         val callers = cleanEdges(p.id, store.edgesTo(p.id)) { it.from }.size
                         if (callers > 0) put("callers", callers)
