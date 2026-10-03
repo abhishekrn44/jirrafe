@@ -164,6 +164,9 @@ object Install {
         |   they are silent, say so rather than fill it in. Never fill a gap with a framework default: which
         |   encoder, database, cache or provider is in use is decided by a `fields` initialiser or a `@Bean` body,
         |   so if neither is shown, fetch it or write "not shown" rather than assume BCrypt, H2 or in-memory.
+        |   `## facts` are source lines with their location: copy them into the answer as they stand. Every claim
+        |   cites one line; a relationship (A calls B, X is stored in Y) must appear on a shown line, in `calls:` or
+        |   in `## facts`, otherwise write "not shown". Fetch at most once; read what is here first.
         |3. Fetch more only in three cases, and in one call: a body that ends with `... cut at line N` continues
         |   with $more; ids listed as `pending`; an id the answer names but does not show. $sources returns
         |   several bodies at once. $node gives one node with its callers and callees. Classes inside internal

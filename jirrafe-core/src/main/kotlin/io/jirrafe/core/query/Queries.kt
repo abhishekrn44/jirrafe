@@ -35,7 +35,7 @@ class Queries(
 ) {
     companion object {
         val json = Json { encodeDefaults = false }
-        const val DEFAULT_BUDGET = 3000 // a ceiling; the measured answers are well under it, and the bodies shrink last
+        const val DEFAULT_BUDGET = 4500 // a ceiling; offline recall was equal at 3000 and 4000, and the facts and helpers below need the room
         private val LIMITS = intArrayOf(Int.MAX_VALUE, 40, 20, 15, 10, 7, 5, 4, 3, 2, 1) // 20 -> 10 halved every section and left half the budget unused; 5 -> 3 turned a 2000 budget into an 1128-token answer
         private val STRUCTURE = setOf(EdgeKind.CONTAINS, EdgeKind.MEMBER_OF_COMMUNITY, EdgeKind.STEP_OF_FLOW, EdgeKind.HAS_FINDING, EdgeKind.IMPORTS, EdgeKind.TESTS)
         private val CODE = setOf(NodeKind.CLASS, NodeKind.INTERFACE, NodeKind.ENUM, NodeKind.RECORD, NodeKind.ANNOTATION)
@@ -45,6 +45,9 @@ class Queries(
         private const val PACK_STEPS = 5 // bodies along the first match's chain: entry, the match, and the hops below it
         private const val PACK_STEPS_MORE = 3 // along a further match's chain
         private const val PACK_MAX = 6 // bodies in one answer
+        private const val HELPERS = 3 // same-class private helpers appended to the bodies
+        private const val HELPER_LINES = 25
+        private const val FACTS = 8 // evidence lines
         private const val PACK_LINES = 120 // per body; a longer method is the agent's own call to read
         private const val DATA_CLASSES = 4
         private const val DATA_FIELDS = 20
@@ -1009,7 +1012,17 @@ class Queries(
                 Pack(n.id, s, lines.take(PACK_LINES).joinToString("\n"), lines.size > PACK_LINES)
             }
         }
-        val packed = pack.map { it.id }.toHashSet()
+        // a private helper the body calls in its own class is the mechanism (getPassword builds the password the
+        // body stores; productDto is the mapping): short, and judged missing three times when left as an id
+        val helpers = pack.flatMap { b -> cleanEdges(b.id, store.edgesFrom(b.id).filter { it.kind == EdgeKind.CALLS }) { it.to }.map { it.to } }.distinct()
+            .filter { id -> pack.none { it.id == id } && pack.any { owner(it.id) == owner(id) } }
+            .mapNotNull { id -> store.node(id)?.takeIf { it.kind == NodeKind.METHOD && "lombok.Generated" !in (it.attrs["annotations"] ?: "") && ((it.endLine ?: 0) - (it.startLine ?: 0)) in 1..HELPER_LINES } }
+            .take(HELPERS).mapNotNull { n -> sources?.read(n, 0)?.let { s ->
+                val raw = s.text.lines().dropWhile { it.isBlank() }.map { it.replace("\t", "  ").trimEnd() }
+                val indent = raw.filter { it.isNotBlank() }.minOfOrNull { it.length - it.trimStart().length } ?: 0
+                Pack(n.id, s, raw.map { it.drop(minOf(indent, it.length - it.trimStart().length)) }.joinToString("\n"), false) } }
+        val packAll = pack + helpers
+        val packed = packAll.map { it.id }.toHashSet()
         // the file as the agent would have read it: cheaper than fragments below the threshold, and coherent
         val wholeFiles = whole.mapNotNull { f ->
             val text = runCatching { java.nio.file.Files.readString(java.nio.file.Path.of(f)) }.getOrNull() ?: return@mapNotNull null
@@ -1027,15 +1040,52 @@ class Queries(
         // The data the chain moves, as a field list each: on a CRUD service the entities and DTOs are the domain, and
         // "what does it return" is answered by a shape, not a body. Types the packed classes use, model layer only,
         // the ones named in the packed code first.
-        val packText = pack.joinToString("\n") { it.text }
+        val packText = packAll.joinToString("\n") { it.text }
         val data = spine.map { owner(it) }.distinct().flatMap { c -> store.edgesFrom(c, EdgeKind.USES_TYPE).map { it.to } }.distinct()
             .mapNotNull { store.node(it) }
             .filter { it.kind in CODE && it.origin == Origin.REPO && it.attrs["layer"] == "model" && it.id.substringAfterLast('.').substringAfterLast('$') in packText }
             .take(DATA_CLASSES)
-            .map { c -> c to store.edgesFrom(c.id, EdgeKind.CONTAINS).mapNotNull { store.node(it.to) }.filter { it.kind == NodeKind.FIELD }.map { it.id.substringAfterLast('#') }.filter { !it.startsWith("this") && '$' !in it }.take(DATA_FIELDS) }
+            .map { c -> c to store.edgesFrom(c.id, EdgeKind.CONTAINS).mapNotNull { store.node(it.to) }.filter { it.kind == NodeKind.FIELD }.map { f -> f.id.substringAfterLast('#') + (if (Attrs.annotations(f).values.any { it["unique"] == "true" }) " (unique)" else "") }.filter { !it.startsWith("this") && '$' !in it }.take(DATA_FIELDS) }
         // and the configuration the chain reads, key and value, so a secret's name or an expiry is not a file read away
         val configKeys = (spine + spine.map { owner(it) }).distinct().flatMap { store.edgesFrom(it, EdgeKind.BINDS_CONFIG).map { e -> e.to } }.distinct()
             .mapNotNull { store.node(it) }.take(CONFIG_KEYS)
+        // Facts a model copies rather than infers, each the source line where it happens. Fifteen judged losses named
+        // exactly these: the caller that rejects, the field set and never read, the line that registers the filter.
+        // A pointer by id was skipped twice over; a line of code with its location gets written into the answer.
+        val facts = ArrayList<Pair<String, String>>() // text, at
+        val spineOwners = packAll.map { owner(it.id).substringBefore('$') }.toSet()
+        val lineOf = { n: Node, needle: String -> sources?.read(n, 0)?.let { src -> src.text.lines().withIndex().firstOrNull { needle in it.value }?.let { (i, t) -> t.trim() to "${relative(src.file)}:${src.startLine + i}" } } }
+        // where else the lead is used: the call site in each caller not shown
+        for (b in pack.take(2)) for (c in cleanEdges(b.id, store.edgesTo(b.id)) { it.from }.map { it.from }.distinct().filter { it !in packed && store.node(it)?.origin == Origin.REPO }.take(3)) {
+            val caller = store.node(c) ?: continue
+            if (caller.kind != NodeKind.METHOD && caller.kind != NodeKind.CONSTRUCTOR) continue
+            lineOf(caller, simpleName(b.id) + "(")?.let { (t, at) -> facts += "${simpleName(owner(c))}.${simpleName(c)} calls ${simpleName(b.id)}:  $t" to at }
+        }
+        // what the chain sets that nothing reads: a setter called here whose getter has no caller outside generated code
+        val generated = { id: String -> store.node(id)?.let { "lombok.Generated" in (it.attrs["annotations"] ?: "") || it.attrs["test"] == "true" } ?: true }
+        val deadEnds = ArrayList<Pair<String, String>>()
+        for (b in packAll) for (e in store.edgesFrom(b.id, EdgeKind.CALLS)) {
+            val name = simpleName(e.to); if (!name.startsWith("set") || name.length < 4 || store.node(owner(e.to))?.attrs?.get("layer") != "model") continue
+            val prop = name.drop(3); val field = owner(e.to) + "#" + prop.replaceFirstChar { it.lowercase() }
+            val readers = store.edgesTo(field, EdgeKind.READS_FIELD).map { it.from }.filter { !generated(it) } +
+                store.edgesFrom(owner(e.to), EdgeKind.CONTAINS).map { it.to }.filter { simpleName(it) == "get$prop" || simpleName(it) == "is$prop" }.flatMap { g -> store.edgesTo(g, EdgeKind.CALLS).map { it.from }.filter { !generated(it) } }
+            val label = "${simpleName(owner(e.to))}.${field.substringAfterLast('#')}"
+            if (readers.isEmpty() && store.node(field) != null && deadEnds.none { it.first.startsWith("$label ") })
+                lineOf(nodes[b.id] ?: store.node(b.id)!!, "$name(")?.let { (t, at) -> deadEnds += "$label is set here and never read anywhere in the repo:  $t" to at }
+        }
+        // audit columns are set everywhere and read by nobody; the dead end worth a line is the one the question is about
+        facts += deadEnds.sortedByDescending { d -> stems.count { st -> d.first.substringBefore(" is set").lowercase().contains(st.lowercase().take(5)) } }.take(2)
+        // the framework declaration that applies to a shown class, as the line that names it
+        // (the filter is a field with its own name, so the lines are picked by what they declare, not by a class name)
+        val routePaths = packAll.flatMap { b -> store.edgesFrom(b.id, EdgeKind.HANDLES_ROUTE).mapNotNull { store.node(it.to)?.fqn?.substringAfter(' ') } }
+        val coversRoute = { t: String -> Regex("\"([^\"]+)\"").findAll(t).any { m -> val pat = m.groupValues[1].removeSuffix("/**").removeSuffix("/*"); routePaths.any { r -> r.startsWith(pat) } } }
+        for (w in wiringBodies.distinct().filter { it !in packed }) {
+            val m = store.node(w) ?: continue
+            val src = sources?.read(m, 0) ?: continue
+            for ((i, t) in src.text.lines().withIndex()) if ("addFilter" in t || "sessionCreationPolicy" in t || "exceptionHandling" in t || (("requestMatchers" in t || "antMatchers" in t) && coversRoute(t))) {
+                facts += "${simpleName(owner(w))}.${simpleName(w)}:  ${t.trim()}" to "${relative(src.file)}:${src.startLine + i}"; if (facts.size >= FACTS) break
+            }
+        }
 
         // What an agent measurably uses, in order: the first flow's steps and their file:line, the top nodes and their
         // edge lists (28 of 49 follow-up ids came only from edges), then docs, then later flows, then communities
@@ -1085,7 +1135,8 @@ class Queries(
                 // the bodies come before the id lists and shrink last: they are the answer, the ids are the map. At the
                 // budget the answer sits between levels 5 and 9, where two bodies were kept and the flow listing, the
                 // wiring sites and the matches were not: a workflow's second step was cut while its map stayed
-                val bodies = pack.cap(when { l >= 20 -> PACK_MAX; l >= 3 -> 4; l >= 2 -> 3; l >= 1 -> 1; else -> 0 })
+                val bodies = pack.cap(when { l >= 20 -> PACK_MAX; l >= 3 -> 4; l >= 2 -> 3; l >= 1 -> 1; else -> 0 }) + (if (l >= 3) helpers else emptyList())
+                if (facts.isNotEmpty()) put("facts", buildJsonArray { for ((t, at) in facts.cap(if (l >= 5) FACTS else 3)) add(buildJsonObject { put("text", t); put("at", at) }) })
                 if (bodies.isNotEmpty()) put("pack", buildJsonArray {
                     for (p in bodies) add(buildJsonObject {
                         put("id", p.id); put("at", "${relative(p.source.file)}:${p.source.startLine}")
@@ -1101,9 +1152,11 @@ class Queries(
                         // what the body calls into the project, by id, so a repository query or a helper is named without a read
                         // where the body goes next, by id, and only where it is not already shown: a written token costs
                         // twelve re-read ones, so nothing is said twice
+                        // the chain in short names with lines, shown or not: two misreads composed a call that is not there
                         val calls = cleanEdges(p.id, store.edgesFrom(p.id).filter { it.kind == EdgeKind.CALLS || it.kind == EdgeKind.DISPATCHES_TO }) { it.to }
-                            .filter { e -> e.to !in packed && store.node(e.to)?.origin != Origin.EXTERNAL && layerRank(e.to) < 3 }
-                        if (l >= 10 && calls.isNotEmpty()) put("calls", buildJsonArray { for (e in calls.cap(4)) add(JsonPrimitive(e.to)) })
+                            .filter { e -> store.node(e.to)?.origin != Origin.EXTERNAL && layerRank(e.to) < 3 && e.to != p.id }.distinctBy { it.to }
+                        if (calls.isNotEmpty()) put("calls", buildJsonArray { for (e in calls.cap(6)) { val n = store.node(e.to)
+                            add(JsonPrimitive("${simpleName(owner(e.to))}.${simpleName(e.to)}" + (n?.startLine?.let { ":$it" } ?: "") + (if (e.to in packed) "" else " (not shown)"))) } })
                         put("text", p.text); if (p.truncated) put("truncated", true)
                     })
                 })

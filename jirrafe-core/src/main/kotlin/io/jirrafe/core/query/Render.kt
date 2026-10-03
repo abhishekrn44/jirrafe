@@ -47,6 +47,7 @@ object Render {
             c["members"]?.jsonArray?.takeIf { it.isNotEmpty() }?.let { m -> appendLine("members (line name): " + m.joinToString(" · ") { it.jsonPrimitive.content }) }
             for (b in c["bodies"]?.jsonArray.orEmpty().map { it.jsonObject }) { appendLine(); append(source(b)) }
         }
+        section(o["facts"], "facts (source lines; cite them as they stand)") { f -> "- " + f.str("text") + "  @ " + f.str("at") }
         val pack = o["pack"]?.jsonArray.orEmpty()
         if (pack.isNotEmpty()) {
             appendLine(); appendLine("## code")
