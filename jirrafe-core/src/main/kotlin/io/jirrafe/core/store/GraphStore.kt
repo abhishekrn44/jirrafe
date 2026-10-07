@@ -43,7 +43,7 @@ class GraphStore private constructor(private val conn: Connection) : GraphSink, 
             CREATE INDEX IF NOT EXISTS nodes_module ON nodes(module);
             CREATE TABLE IF NOT EXISTS edges(
                 src TEXT NOT NULL, dst TEXT NOT NULL, kind TEXT NOT NULL, resolution TEXT NOT NULL,
-                confidence REAL NOT NULL, PRIMARY KEY(src, dst, kind)) WITHOUT ROWID;
+                confidence REAL NOT NULL, line INTEGER, PRIMARY KEY(src, dst, kind)) WITHOUT ROWID;
             CREATE INDEX IF NOT EXISTS edges_dst ON edges(dst, kind);
             CREATE VIRTUAL TABLE IF NOT EXISTS nodes_fts USING fts5(id UNINDEXED, terms, signature, doc);
         """
@@ -61,6 +61,8 @@ class GraphStore private constructor(private val conn: Connection) : GraphSink, 
                 s.execute("PRAGMA journal_mode=WAL")
                 s.execute("PRAGMA synchronous=NORMAL")
                 SCHEMA.split(";").filter { it.isNotBlank() }.forEach { s.execute(it) }
+                // a graph built before edges carried a line: add the column, the next `index` fills it
+                runCatching { s.execute("ALTER TABLE edges ADD COLUMN line INTEGER") }
             }
             c.autoCommit = false
             return GraphStore(c)
@@ -93,7 +95,8 @@ class GraphStore private constructor(private val conn: Connection) : GraphSink, 
             "attrs = json_patch(coalesce(nodes.attrs, '{}'), coalesce(excluded.attrs, '{}'))"
     )
     private val insertEdge = conn.prepareStatement(
-        "INSERT OR IGNORE INTO edges(src, dst, kind, resolution, confidence) VALUES(?,?,?,?,?)"
+        // the first row wins, as before; a later pass that knows the line fills it in (bytecode emits the edge first, source knows where)
+        "INSERT INTO edges(src, dst, kind, resolution, confidence, line) VALUES(?,?,?,?,?,?) ON CONFLICT(src, dst, kind) DO UPDATE SET line = COALESCE(edges.line, excluded.line)"
     )
     private var pending = 0
 
@@ -122,6 +125,7 @@ class GraphStore private constructor(private val conn: Connection) : GraphSink, 
         insertEdge.setString(3, edge.kind.name)
         insertEdge.setString(4, edge.resolution.name)
         insertEdge.setDouble(5, edge.confidence)
+        if (edge.line == null) insertEdge.setNull(6, java.sql.Types.INTEGER) else insertEdge.setInt(6, edge.line)
         insertEdge.addBatch()
         batched()
     }
@@ -153,7 +157,7 @@ class GraphStore private constructor(private val conn: Connection) : GraphSink, 
         edges("dst", id, kind)
 
     private fun edges(column: String, id: String, kind: EdgeKind?): List<Edge> {
-        val sql = "SELECT src, dst, kind, resolution, confidence FROM edges WHERE $column = ?" +
+        val sql = "SELECT src, dst, kind, resolution, confidence, line FROM edges WHERE $column = ?" +
             (if (kind == null) "" else " AND kind = ?")
         conn.prepareStatement(sql).use { st ->
             st.setString(1, id)
@@ -162,7 +166,7 @@ class GraphStore private constructor(private val conn: Connection) : GraphSink, 
                 val out = ArrayList<Edge>()
                 while (rs.next()) out += Edge(
                     rs.getString(1), rs.getString(2), EdgeKind.valueOf(rs.getString(3)),
-                    Resolution.valueOf(rs.getString(4)), rs.getDouble(5),
+                    Resolution.valueOf(rs.getString(4)), rs.getDouble(5), rs.getInt(6).takeIf { !rs.wasNull() },
                 )
                 return out
             }

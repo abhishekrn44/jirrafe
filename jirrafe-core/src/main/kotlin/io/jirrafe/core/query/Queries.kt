@@ -1075,7 +1075,10 @@ class Queries(
             val caller = store.node(c) ?: continue
             if (caller.kind != NodeKind.METHOD && caller.kind != NodeKind.CONSTRUCTOR) continue
             sources?.read(caller, 0)?.let { src ->
-                val ls = src.text.lines(); val i = ls.indexOfFirst { simpleName(t) + "(" in it }
+                val ls = src.text.lines()
+                // the call site the extractor recorded on the edge; a text search only when the edge came from bytecode
+                val i = store.edgesFrom(c, EdgeKind.CALLS).firstOrNull { it.to == t }?.line?.minus(src.startLine)?.takeIf { it in ls.indices }
+                    ?: ls.indexOfFirst { simpleName(t) + "(" in it }
                 if (i >= 0) {
                     // the call and what it decides: the judge wanted the 409 two lines under the `if (exists...)`, not the test alone
                     val guarded = (i + 1..minOf(i + 3, ls.lastIndex)).map { ls[it].trim() }.takeWhile { it.isNotEmpty() && !it.startsWith("}") }
@@ -1095,7 +1098,10 @@ class Queries(
                 store.edgesFrom(owner(e.to), EdgeKind.CONTAINS).map { it.to }.filter { simpleName(it) == "get$prop" || simpleName(it) == "is$prop" }.flatMap { g -> store.edgesTo(g, EdgeKind.CALLS).map { it.from }.filter { !generated(it) } }
             val label = "${simpleName(owner(e.to))}.${field.substringAfterLast('#')}"
             if (readers.isEmpty() && store.node(field) != null && deadEnds.none { it.first.startsWith("$label ") })
-                lineOf(nodes[b.id] ?: store.node(b.id)!!, "$name(")?.let { (t, at) -> deadEnds += "$label is set here and never read anywhere in the repo:  $t" to at }
+                (e.line?.let { l -> sources?.read(nodes[b.id] ?: store.node(b.id)!!, 0)?.let { src -> src.text.lines().getOrNull(l - src.startLine)?.let { it.trim() to "${relative(src.file)}:$l" } } }
+                    ?: lineOf(nodes[b.id] ?: store.node(b.id)!!, "$name("))
+                    // "never read" holds for indexed code: reflection, JPQL strings and templates are not in the graph
+                    ?.let { (t, at) -> deadEnds += "$label is set here and no indexed code reads it:  $t" to at }
         }
         // audit columns are set everywhere and read by nobody; the dead end worth a line is the one the question is about
         facts += deadEnds.sortedByDescending { d -> stems.count { st -> d.first.substringBefore(" is set").lowercase().contains(st.lowercase().take(5)) } }.take(2)

@@ -62,6 +62,8 @@ data class Edge(
     val kind: EdgeKind,
     val resolution: Resolution,
     val confidence: Double = 1.0,
+    /** The source line of the call, read or write in [from], when the extractor saw it; a citation comes from here, not from a text search. */
+    val line: Int? = null,
 )
 
 /** Where extractors send what they find. Nodes are insert-or-ignore unless [replace] is set. */

@@ -265,18 +265,18 @@ class SourceExtractor(private val sink: GraphSink) {
 
         override fun visitMethodInvocation(node: MethodInvocationTree, p: Unit?): Unit? {
             val e = trees.getElement(TreePath(currentPath, node.methodSelect)) as? ExecutableElement
-            if (e != null && !isError(trees.getTypeMirror(currentPath)) && argumentsResolved(node.arguments)) call(e)
+            if (e != null && !isError(trees.getTypeMirror(currentPath)) && argumentsResolved(node.arguments)) call(e, node)
             return super.visitMethodInvocation(node, p)
         }
 
         override fun visitNewClass(node: NewClassTree, p: Unit?): Unit? {
             val e = trees.getElement(currentPath) as? ExecutableElement
-            if (e != null && argumentsResolved(node.arguments)) call(e)
+            if (e != null && argumentsResolved(node.arguments)) call(e, node)
             return super.visitNewClass(node, p)
         }
 
         override fun visitMemberReference(node: MemberReferenceTree, p: Unit?): Unit? {
-            (trees.getElement(currentPath) as? ExecutableElement)?.let { call(it) }
+            (trees.getElement(currentPath) as? ExecutableElement)?.let { call(it, node) }
             return super.visitMemberReference(node, p)
         }
 
@@ -300,11 +300,11 @@ class SourceExtractor(private val sink: GraphSink) {
             return null
         }
 
-        private fun call(e: ExecutableElement) {
+        private fun call(e: ExecutableElement, at: Tree) {
             val owner = e.enclosingElement as? TypeElement ?: return
             val from = owners.lastOrNull() ?: return
             if (isJdk(binaryName(owner))) return
-            sink.edge(Edge(from, methodId(e), EdgeKind.CALLS, Resolution.EXACT))
+            sink.edge(Edge(from, methodId(e), EdgeKind.CALLS, Resolution.EXACT, line = line(positions.getStartPosition(cu, at))))
         }
 
         private fun fieldAccess(node: ExpressionTree) {
@@ -319,8 +319,9 @@ class SourceExtractor(private val sink: GraphSink) {
             val assigned = parent is AssignmentTree && parent.variable === node
             val updated = (parent is CompoundAssignmentTree && parent.variable === node) ||
                 (parent is UnaryTree && parent.kind in INCREMENTS)
-            if (assigned || updated) sink.edge(Edge(from, id, EdgeKind.WRITES_FIELD, Resolution.EXACT))
-            if (!assigned) sink.edge(Edge(from, id, EdgeKind.READS_FIELD, Resolution.EXACT))
+            val at = line(positions.getStartPosition(cu, node))
+            if (assigned || updated) sink.edge(Edge(from, id, EdgeKind.WRITES_FIELD, Resolution.EXACT, line = at))
+            if (!assigned) sink.edge(Edge(from, id, EdgeKind.READS_FIELD, Resolution.EXACT, line = at))
         }
 
         private fun argumentsResolved(args: List<ExpressionTree>) =
