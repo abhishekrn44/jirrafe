@@ -1223,6 +1223,13 @@ class Queries(
                     for ((site, text) in wiringSites.cap(maxOf(4, l))) add(buildJsonObject { put("id", site.id); annotationAt(site, text)?.let { put("at", it) }; put("declares", text) })
                 })
                 if (l >= 5 && dependencies.isNotEmpty()) put("dependencies", buildJsonArray { for (d in dependencies) add(JsonPrimitive(d)) })
+                // what the budget cut, by name: a section that vanishes without a word reads as "there is none", and the
+                // model then writes "not shown" or a framework default where one more call would have answered
+                if (l < 5) {
+                    val cut = listOfNotNull("data".takeIf { data.isNotEmpty() }, "config".takeIf { configKeys.isNotEmpty() }, "wiring".takeIf { wiringSites.isNotEmpty() },
+                        "dependencies".takeIf { dependencies.isNotEmpty() }, "facts (${minOf(facts.size, FACTS) - 3} more)".takeIf { facts.size > 3 })
+                    if (cut.isNotEmpty()) put("omitted", buildJsonArray { for (c in cut) add(JsonPrimitive(c)) })
+                }
                 // a thin answer says which of the code's own words are near the question, so the next ask lands
                 if (pack.isEmpty() || hits.size < 3) nearbyVocabulary(words + stems).takeIf { it.isNotEmpty() }?.let { v -> put("vocabulary", buildJsonArray { for (t in v) add(JsonPrimitive(t)) }) }
                 // the other matches: with bodies packed, a few names and lines for the agent to choose to follow; the
