@@ -1060,7 +1060,8 @@ class Queries(
         // Facts a model copies rather than infers, each the source line where it happens. Fifteen judged losses named
         // exactly these: the caller that rejects, the field set and never read, the line that registers the filter.
         // A pointer by id was skipped twice over; a line of code with its location gets written into the answer.
-        val facts = ArrayList<Pair<String, String>>() // text, at
+        val facts = ArrayList<Pair<String, String>>() // text, at; assembled below in order of worth
+        val callerFacts = ArrayList<Pair<String, String>>()
         val spineOwners = packAll.map { owner(it.id).substringBefore('$') }.toSet()
         val lineOf = { n: Node, needle: String -> sources?.read(n, 0)?.let { src -> src.text.lines().withIndex().firstOrNull { needle in it.value }?.let { (i, t) -> t.trim() to "${relative(src.file)}:${src.startLine + i}" } } }
         // where else the lead is used: the call site in each caller not shown
@@ -1070,7 +1071,7 @@ class Queries(
             listOf(b.id) + cleanEdges(b.id, store.edgesFrom(b.id).filter { it.kind == EdgeKind.CALLS }) { it.to }.map { it.to }
                 .filter { store.node(owner(it))?.attrs?.get("layer") == "repository" && store.node(it)?.origin == Origin.REPO } }.distinct()
         for (t in leadTargets) for (c in cleanEdges(t, store.edgesTo(t)) { it.from }.map { it.from }.distinct().filter { it !in packed && store.node(it)?.origin == Origin.REPO }.take(3)) {
-            if (facts.size >= FACTS) break
+            if (callerFacts.size >= FACTS) break
             val b = pack.first { p -> p.id == t || store.edgesFrom(p.id, EdgeKind.CALLS).any { it.to == t } }
             val caller = store.node(c) ?: continue
             if (caller.kind != NodeKind.METHOD && caller.kind != NodeKind.CONSTRUCTOR) continue
@@ -1083,11 +1084,10 @@ class Queries(
                     // the call and what it decides: the judge wanted the 409 two lines under the `if (exists...)`, not the test alone
                     val guarded = (i + 1..minOf(i + 3, ls.lastIndex)).map { ls[it].trim() }.takeWhile { it.isNotEmpty() && !it.startsWith("}") }
                         .let { tail -> val k = tail.indexOfFirst { l -> l.startsWith("throw ") || l.startsWith("return ") || "ResponseEntity" in l || "Status" in l }; if (k >= 0) tail.take(k + 1) else emptyList() }
-                    facts += "${simpleName(owner(c))}.${simpleName(c)} calls ${simpleName(t)}:  " + (listOf(ls[i].trim()) + guarded).joinToString(" ") to "${relative(src.file)}:${src.startLine + i}"
+                    callerFacts += "${simpleName(owner(c))}.${simpleName(c)} calls ${simpleName(t)}:  " + (listOf(ls[i].trim()) + guarded).joinToString(" ") to "${relative(src.file)}:${src.startLine + i}"
                 }
             }
         }
-        facts += constraints
         // what the chain sets that nothing reads: a setter called here whose getter has no caller outside generated code
         val generated = { id: String -> store.node(id)?.let { "lombok.Generated" in (it.attrs["annotations"] ?: "") || it.attrs["test"] == "true" } ?: true }
         val deadEnds = ArrayList<Pair<String, String>>()
@@ -1104,7 +1104,11 @@ class Queries(
                     ?.let { (t, at) -> deadEnds += "$label is set here and no indexed code reads it:  $t" to at }
         }
         // audit columns are set everywhere and read by nobody; the dead end worth a line is the one the question is about
+        // worth, when the cap binds: a dead end is the fact grep never finds and the judge rewarded every time; a constraint is
+        // one line that answers "how is it rejected"; the callers came last to the slots and were filling all eight
         facts += deadEnds.sortedByDescending { d -> stems.count { st -> d.first.substringBefore(" is set").lowercase().contains(st.lowercase().take(5)) } }.take(2)
+        facts += constraints
+        facts += callerFacts
         // the framework declaration that applies to a shown class, as the line that names it
         // (the filter is a field with its own name, so the lines are picked by what they declare, not by a class name)
         val routePaths = packAll.flatMap { b -> store.edgesFrom(b.id, EdgeKind.HANDLES_ROUTE).mapNotNull { store.node(it.to)?.fqn?.substringAfter(' ') } }
