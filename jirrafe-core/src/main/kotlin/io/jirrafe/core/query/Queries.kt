@@ -1111,19 +1111,19 @@ class Queries(
         // where else the lead is used: the call site in each caller not shown
         // a service method that wraps a repository query is a pass-through: who else runs that query is the answer
         // (createNewUser and saveRequest call userRepo.existsByUsername directly, not the service's wrapper)
-        val leadTargets = pack.sortedByDescending { hits[it.id] ?: 0.0 }.flatMap { b ->
+        // the helpers too: getPassword has two callers, and the admin approval path was missed with only one of them shown
+        val leadTargets = pack.sortedByDescending { hits[it.id] ?: 0.0 }.let { it.take(1) + helpers + it.drop(1) }.flatMap { b ->
             listOf(b.id) + cleanEdges(b.id, store.edgesFrom(b.id).filter { it.kind == EdgeKind.CALLS }) { it.to }.map { it.to }
                 .filter { store.node(owner(it))?.attrs?.get("layer") == "repository" && store.node(it)?.origin == Origin.REPO } }.distinct()
         for (t in leadTargets) for (c in cleanEdges(t, store.edgesTo(t)) { it.from }.map { it.from }.distinct().filter { it !in packed && store.node(it)?.origin == Origin.REPO }.take(3)) {
             if (callerFacts.size >= FACTS) break
-            val b = pack.first { p -> p.id == t || store.edgesFrom(p.id, EdgeKind.CALLS).any { it.to == t } }
             val caller = store.node(c) ?: continue
             if (caller.kind != NodeKind.METHOD && caller.kind != NodeKind.CONSTRUCTOR) continue
             sources?.read(caller, 0)?.let { src ->
                 val ls = src.text.lines()
                 // the call site the extractor recorded on the edge; a text search only when the edge came from bytecode
                 val i = store.edgesFrom(c, EdgeKind.CALLS).firstOrNull { it.to == t }?.line?.minus(src.startLine)?.takeIf { it in ls.indices }
-                    ?: ls.indexOfFirst { simpleName(t) + "(" in it }
+                    ?: ls.indexOfFirst { "." + simpleName(t) + "(" in it }.takeIf { it >= 0 } ?: ls.indexOfFirst { simpleName(t) + "(" in it && !Regex("""(public|private|protected)\s""").containsMatchIn(it) }
                 if (i >= 0) {
                     // the call and what it decides: the judge wanted the 409 two lines under the `if (exists...)`, not the test alone
                     val guarded = (i + 1..minOf(i + 3, ls.lastIndex)).map { ls[it].trim() }.takeWhile { it.isNotEmpty() && !it.startsWith("}") }
@@ -1233,7 +1233,9 @@ class Queries(
         facts += deadEnds.sortedByDescending { d -> stems.count { st -> d.first.substringBefore(" is set").lowercase().contains(st.lowercase().take(5)) } }.take(2)
         facts += unguarded
         facts += ownInstances
-        facts += constraints
+        // a unique column only when the question names it: the username constraint answers "is the name taken", and on
+        // the password question three such lines took the slots the getPassword callers needed
+        facts += constraints.filter { (t, _) -> t.substringBefore(':').substringAfter('.').lowercase().let { col -> stems.any { st -> col.contains(st.lowercase().take(5)) } } }
         facts += callerFacts
         facts += readerFacts
         // the framework declaration that applies to a shown class, as the line that names it
