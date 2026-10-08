@@ -186,10 +186,10 @@ class QueriesTest {
         val log = kotlin.io.path.createTempDirectory("jirrafe-mem").resolve("queries.jsonl")
         val remembering = Queries(store, "/repo", null, reader, Memory(log))
         val cold = remembering.explain("how are orders listed?")
-        assertTrue(cold["nodes"]!!.jsonArray.first().jsonObject.str("id") != "b.Util1#f()", "not the answer on its own")
+        assertTrue(cold["nodes"]?.jsonArray?.firstOrNull()?.jsonObject?.str("id") != "b.Util1#f()", "not the answer on its own")
         remembering.readSource("b.Util1#f()") // what the agent went on to read last time
         val warm = remembering.explain("how is the order list produced?")
-        assertTrue(warm["pack"]!!.jsonArray.any { it.jsonObject.str("id") == "b.Util1#f()" }, "a rephrasing sharing most stems recalls it, body included")
+        assertTrue(warm["pack"]?.jsonArray?.any { it.jsonObject.str("id") == "b.Util1#f()" } == true, "a rephrasing sharing most stems recalls it, body included")
         assertTrue(remembering.explain("how are pets vaccinated?")["nodes"]!!.jsonArray.none { it.jsonObject.str("id") == "b.Util1#f()" }, "a different question does not")
     }
 

@@ -1084,7 +1084,16 @@ class Queries(
         // family and not the question. They ride when the question names them, or when nothing else answers it
         // a bean a packed body injects is part of its mechanism whatever it is called: the producer's KafkaTemplate
         val chainBeans = spineIds.flatMap { c -> store.edgesFrom(c, EdgeKind.INJECTS).map { it.to } }.mapNotNull { store.node(it)?.attrs?.get("provider") }.toSet()
-        val askedFirst = wiringBodies.filter { it !in spine }.distinct().filter { !listing && (spine.isEmpty() || namedWiring(it) || it in chainBeans) }
+        // a bean a packed class builds its own instance of: the own-instance fact below names it, and the body it names
+        // is in hand to compare. LoginServiceImpl.encoder is its own Argon2PasswordEncoder, and on "how does sign-in
+        // authenticate" no question word named the passwordEncoder bean, so the answer said its body was not shown
+        val ownTypes = spine.map { owner(it).substringBefore('$') }.distinct().flatMap { o -> store.edgesFrom(o, EdgeKind.CONTAINS).mapNotNull { store.node(it.to) } }
+            .filter { it.kind == NodeKind.FIELD }.map { it.signature.orEmpty().substringAfter(": ", "").substringAfterLast('.') }.filter { it.isNotEmpty() }.toSet()
+        val ownInstanceProviders = wiringBodies.filter { w ->
+            store.edgesFrom(w, EdgeKind.PROVIDES_BEAN).isNotEmpty() && store.node(w)?.let { m -> sources?.read(m, 0)?.text }
+                ?.let { Regex("""new\s+([A-Z]\w*)\s*[(<]""").find(it)?.groupValues?.get(1) }?.let { it in ownTypes } == true
+        }
+        val askedFirst = (ownInstanceProviders + wiringBodies).filter { it !in spine }.distinct().filter { !listing && (spine.isEmpty() || namedWiring(it) || it in chainBeans || it in ownInstanceProviders) }
         val pack = (spine.filterIndexed { i, id -> i == 0 || !trivial(id) } + askedFirst.take(WIRING_BODIES)).mapNotNull { id -> nodes[id] ?: store.node(id) }
             .filter { n -> n.file == null || (n.file !in whole && n.file !in cards) } // its file is already going, whole or as a card
             .mapNotNull { n ->
@@ -1117,7 +1126,24 @@ class Queries(
                 val raw = s.text.lines().dropWhile { it.isBlank() }.map { it.replace("\t", "  ").trimEnd() }
                 val indent = raw.filter { it.isNotBlank() }.minOfOrNull { it.length - it.trimStart().length } ?: 0
                 Pack(n.id, s, raw.map { it.drop(minOf(indent, it.length - it.trimStart().length)) }.joinToString("\n"), false) } }
-        val packAll = pack + helpers
+        // A sibling the question names: a method of a packed class whose name carries the question's words, which the
+        // walk never reaches because nothing packed calls it. "when and how must they change it" packed changePassword,
+        // and defaultPassword beside it, which dereferences a null row, went unread. Two when they carry two words
+        // each, else the one with the most words and the longest body; a sibling the lead's walk could reach is not this
+        val longStems = stems.map { it.lowercase() }.filter { it.length >= 4 }.distinct()
+        val taken = (pack + helpers).map { it.id }.toSet()
+        val siblings = pack.map { owner(it.id).substringBefore('$') }.distinct()
+            .flatMap { c -> store.edgesFrom(c, EdgeKind.CONTAINS).map { it.to } }
+            .filter { id -> id !in taken && store.node(id)?.let { n -> n.kind == NodeKind.METHOD && n.origin == Origin.REPO && n.attrs["test"] != "true" && "lombok.Generated" !in (n.attrs["annotations"] ?: "") && !trivial(id) } == true }
+            .map { id -> id to longStems.count { simpleName(id).lowercase().contains(it) } }.filter { it.second > 0 }
+            .sortedWith(compareByDescending<Pair<String, Int>> { it.second }.thenByDescending { store.node(it.first)?.let { n -> (n.endLine ?: 0) - (n.startLine ?: 0) } ?: 0 })
+            // one word is enough only when it is a distinctive one: "password" names defaultPassword, "user" names half the repo
+            .let { all -> all.filter { it.second >= 2 }.take(2).ifEmpty { all.filter { (id, _) -> longStems.any { st -> st.length >= 6 && simpleName(id).lowercase().contains(st) } }.take(1) } }
+            .mapNotNull { (id, _) -> store.node(id)?.let { n -> sources?.read(n, 0)?.let { s ->
+                val raw = s.text.lines().dropWhile { it.isBlank() }.map { it.replace("\t", "  ").trimEnd() }
+                val indent = raw.filter { it.isNotBlank() }.minOfOrNull { it.length - it.trimStart().length } ?: 0
+                Pack(n.id, s, raw.map { it.drop(minOf(indent, it.length - it.trimStart().length)) }.joinToString("\n"), false) } } }
+        val packAll = pack + helpers + siblings
         val packed = packAll.map { it.id }.toHashSet()
         // the file as the agent would have read it: cheaper than fragments below the threshold, and coherent
         val wholeFiles = whole.mapNotNull { f ->
@@ -1414,7 +1440,9 @@ class Queries(
                 // the bodies come before the id lists and shrink last: they are the answer, the ids are the map. At the
                 // budget the answer sits between levels 5 and 9, where two bodies were kept and the flow listing, the
                 // wiring sites and the matches were not: a workflow's second step was cut while its map stayed
-                val bodies = pack.cap(when { l >= 20 -> PACK_MAX; l >= 3 -> 4; l >= 2 -> 3; l >= 1 -> 1; else -> 0 }) + (if (l >= 3) helpers else emptyList())
+                // the spine is capped at PACK_MAX already; the wiring bodies after it are chosen one by one and ride at the top level
+                // (the encoder bean evicted the details service on sign-in when the cap covered both)
+                val bodies = pack.cap(when { l >= 20 -> PACK_MAX + WIRING_BODIES; l >= 3 -> 4; l >= 2 -> 3; l >= 1 -> 1; else -> 0 }) + (if (l >= 3) helpers + siblings else emptyList())
                 if (facts.isNotEmpty()) put("facts", buildJsonArray { for ((t, at) in facts.cap(if (l >= 5) FACTS else 3)) add(buildJsonObject { put("text", t); put("at", at) }) })
                 if (bodies.isNotEmpty()) put("pack", buildJsonArray {
                     for (p in bodies) add(buildJsonObject {
