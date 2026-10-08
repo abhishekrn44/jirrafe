@@ -59,7 +59,7 @@ class Queries(
          * one of its annotations, brings the whole family into the answer; Spring calls these, the code does not,
          * so no call chain reaches them.
          */
-        private class Family(val words: List<String>, val annotations: List<String>, val beanTypes: List<String>, val artifacts: List<String>)
+        private class Family(val words: List<String>, val annotations: List<String>, val beanTypes: List<String>, val artifacts: List<String>, val edges: Set<EdgeKind> = emptySet())
         private val FAMILIES = listOf(
             Family(listOf("secur", "auth", "login", "signin", "token", "jwt", "permission", "role", "admin", "password", "credential"),
                 listOf("EnableWebSecurity", "EnableMethodSecurity", "EnableGlobalMethodSecurity", "PreAuthorize", "PostAuthorize", "Secured", "RolesAllowed"),
@@ -74,6 +74,13 @@ class Queries(
             Family(listOf("valid"), listOf("Valid", "Validated"), emptyList(), listOf("validation")),
             Family(listOf("event", "startup", "preload", "listener", "boot"), listOf("EventListener", "PostConstruct"), listOf("CommandLineRunner", "ApplicationRunner", "ApplicationListener"), emptyList()),
             Family(listOf("cors", "intercept", "mvc"), listOf("CrossOrigin"), listOf("WebMvcConfigurer", "HandlerInterceptor"), emptyList()),
+            // in play when a packed body produces to or consumes from a topic, whatever the question's words: the topic bean
+            // says how many partitions and replicas, the factory which serializers; "how is an upload announced" was
+            // answered without either, and the agent that went to read KafkaConfig itself was the one that scored
+            Family(listOf("kafka", "topic", "publish", "announc", "produc", "consum", "messag", "broker", "queue", "rabbit", "jms"),
+                listOf("KafkaListener", "KafkaHandler", "EnableKafka", "RabbitListener", "JmsListener"),
+                listOf("NewTopic", "ProducerFactory", "KafkaTemplate", "ConsumerFactory", "ConcurrentKafkaListenerContainerFactory"),
+                listOf("kafka", "amqp", "rabbit", "jms"), setOf(EdgeKind.PRODUCES_TO, EdgeKind.CONSUMES_FROM)),
         )
         private const val WIRING_SITES = 12
         private const val WIRING_BODIES = 3 // the framework bodies that answer a question the call chain cannot
@@ -1008,7 +1015,7 @@ class Queries(
         // the families in play: named by the question, or declared on what the chain packs
         val onSpine = (spine + spine.map { owner(it) }).distinct().mapNotNull { store.node(it) }.flatMap { Attrs.annotations(it).keys }.map { it.substringAfterLast('.') }.toSet()
         val asked = FAMILIES.filter { f -> stems.any { s -> f.words.any { w -> s.lowercase().startsWith(w) } } }
-        val families = FAMILIES.filter { f -> f in asked || f.annotations.any { it in onSpine } }
+        val families = FAMILIES.filter { f -> f in asked || f.annotations.any { it in onSpine } || f.edges.any { k -> spine.any { store.edgesFrom(it, k).isNotEmpty() } } }
         val spineIds = (spine + spine.map { owner(it) }).toSet()
         val wiring = ArrayList<Pair<Node, String>>() // site, its annotation text
         val wiringBodies = ArrayList<String>() // the bean methods that configure the concept, packed like chain steps
@@ -1075,7 +1082,9 @@ class Queries(
             simpleName(id).lowercase().contains(w) || owner(id).substringAfterLast('.').lowercase().contains(w) } }
         // "JWT signing" is answered by `generateToken`; the filter chain and the user-details service are the same
         // family and not the question. They ride when the question names them, or when nothing else answers it
-        val askedFirst = wiringBodies.filter { it !in spine }.distinct().filter { !listing && (spine.isEmpty() || namedWiring(it)) }
+        // a bean a packed body injects is part of its mechanism whatever it is called: the producer's KafkaTemplate
+        val chainBeans = spineIds.flatMap { c -> store.edgesFrom(c, EdgeKind.INJECTS).map { it.to } }.mapNotNull { store.node(it)?.attrs?.get("provider") }.toSet()
+        val askedFirst = wiringBodies.filter { it !in spine }.distinct().filter { !listing && (spine.isEmpty() || namedWiring(it) || it in chainBeans) }
         val pack = (spine.filterIndexed { i, id -> i == 0 || !trivial(id) } + askedFirst.take(WIRING_BODIES)).mapNotNull { id -> nodes[id] ?: store.node(id) }
             .filter { n -> n.file == null || (n.file !in whole && n.file !in cards) } // its file is already going, whole or as a card
             .mapNotNull { n ->
@@ -1089,14 +1098,21 @@ class Queries(
         }
         // a private helper the body calls in its own class is the mechanism (getPassword builds the password the
         // body stores; productDto is the mapping): short, and judged missing three times when left as an id
+        // a helper lives in a packed class, whichever packed body calls it: the filter calls validateToken, which lives
+        // beside the packed generateToken
+        val helperOwners = pack.map { owner(it.id) }.toSet()
         fun privateHelpers(of: List<String>, seen: Set<String>): List<Node> = of.flatMap { b -> cleanEdges(b, store.edgesFrom(b).filter { it.kind == EdgeKind.CALLS }) { it.to }.map { it.to } }.distinct()
-            .filter { id -> id !in seen && of.any { owner(it) == owner(id) } }
+            .filter { id -> id !in seen && owner(id) in helperOwners }
             .mapNotNull { id -> store.node(id)?.takeIf { it.kind == NodeKind.METHOD && "lombok.Generated" !in (it.attrs["annotations"] ?: "") && ((it.endLine ?: 0) - (it.startLine ?: 0)) in 1..HELPER_LINES } }
         val packedIds = pack.map { it.id }
-        val h1 = privateHelpers(packedIds, packedIds.toSet())
+        // the chain's bodies first, then the wiring bodies: a bean method's own callee (kafkaTemplate -> producerFactory)
+        // took the slot of the chain's sendJob, which is the send the question is about
+        val chainPacked = packedIds.filter { it !in askedFirst }
+        val h1 = privateHelpers(chainPacked, packedIds.toSet())
         // and a helper's own helper: persistApplication calls sendJob, which is the producer, and one level down is still the mechanism
         val h2 = privateHelpers(h1.map { it.id }, (packedIds + h1.map { it.id }).toSet())
-        val helpers = (h1 + h2).distinctBy { it.id }
+        val h3 = privateHelpers(packedIds.filter { it in askedFirst }, (packedIds + (h1 + h2).map { it.id }).toSet())
+        val helpers = (h1 + h2 + h3).distinctBy { it.id }
             .take(HELPERS).mapNotNull { n -> sources?.read(n, 0)?.let { s ->
                 val raw = s.text.lines().dropWhile { it.isBlank() }.map { it.replace("\t", "  ").trimEnd() }
                 val indent = raw.filter { it.isNotBlank() }.minOfOrNull { it.length - it.trimStart().length } ?: 0
