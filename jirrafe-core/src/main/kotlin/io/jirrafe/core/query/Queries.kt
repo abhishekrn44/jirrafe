@@ -1100,6 +1100,35 @@ class Queries(
         }
         // what the chain sets that nothing reads: a setter called here whose getter has no caller outside generated code
         val generated = { id: String -> store.node(id)?.let { "lombok.Generated" in (it.attrs["annotations"] ?: "") || it.attrs["test"] == "true" } ?: true }
+        // A write that skips the check. A repository check (existsBy..., countBy...) guards a save in its callers; another
+        // method that saves through the same repository without calling it is the gap the question is about: "approveRequest
+        // saves the user and never re-checks the username" was the one fact every answer built on the callers missed.
+        val unguarded = ArrayList<Pair<String, String>>()
+        // only a check on something the question names: existsByUsername for "a username is already taken"; not the
+        // pending-request check in the two-step question, where approveRequest's save of the request row is an update
+        val askedWords = (words + stems).map { it.lowercase() }.toSet()
+        val checks = { t: String -> simpleName(t).substringAfter("By", "").split("And", "Or").map { it.lowercase() }.filter { it.isNotEmpty() } }
+        val guards = leadTargets.filter { t -> simpleName(t).let { it.startsWith("exists") || it.startsWith("count") } && store.node(owner(t))?.attrs?.get("layer") == "repository" && checks(t).any { it in askedWords } }
+        for (g in guards.take(2)) {
+            val repo = owner(g)
+            val direct = store.edgesTo(g, EdgeKind.CALLS).map { it.from }.toSet()
+            val guarded = direct + direct.flatMap { w -> store.edgesTo(w, EdgeKind.CALLS).map { it.from } } // a caller of a wrapper is guarded too
+            // Spring Data's inherited writes, by the signature every repository shares
+            val writes = listOf("save(java.lang.Object)", "saveAndFlush(java.lang.Object)", "saveAll(java.lang.Iterable)", "saveAllAndFlush(java.lang.Iterable)").map { "$repo#$it" }
+            for (wr in writes) for (e in store.edgesTo(wr, EdgeKind.CALLS)) {
+                if (unguarded.size >= 2) break
+                if (e.from in guarded || store.node(e.from)?.let { it.origin != Origin.REPO || it.attrs["test"] == "true" } != false) continue
+                val writer = store.node(e.from) ?: continue
+                val call = simpleName(wr)
+                val src = sources?.read(writer, 0) ?: continue
+                val ls = src.text.lines()
+                val repoVar = simpleName(repo).replaceFirstChar { it.lowercase() }
+                val i = e.line?.minus(src.startLine)?.takeIf { it in ls.indices }
+                    ?: ls.indexOfFirst { ".$call(" in it && repoVar in it }.takeIf { it >= 0 } ?: ls.indexOfFirst { ".$call(" in it }
+                if (i < 0) continue
+                unguarded += "${simpleName(owner(e.from))}.${simpleName(e.from)} saves through ${simpleName(repo)} and does not call ${simpleName(g)}:  ${ls[i].trim()}" to "${relative(src.file)}:${src.startLine + i}"
+            }
+        }
         val deadEnds = ArrayList<Pair<String, String>>()
         for (b in packAll) for (e in store.edgesFrom(b.id, EdgeKind.CALLS)) {
             val name = simpleName(e.to); if (!name.startsWith("set") || name.length < 4 || store.node(owner(e.to))?.attrs?.get("layer") != "model") continue
@@ -1133,6 +1162,7 @@ class Queries(
                     }
             }
         facts += deadEnds.sortedByDescending { d -> stems.count { st -> d.first.substringBefore(" is set").lowercase().contains(st.lowercase().take(5)) } }.take(2)
+        facts += unguarded
         facts += constraints
         facts += callerFacts
         facts += readerFacts
