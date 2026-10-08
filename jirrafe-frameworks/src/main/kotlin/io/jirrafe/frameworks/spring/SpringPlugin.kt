@@ -91,13 +91,14 @@ class SpringPlugin : FrameworkPlugin {
             return value.replace(PLACEHOLDER) { m -> m.groupValues[2].drop(1).ifEmpty { m.value } }
         }
 
-        private fun bindConfig(from: String, text: String) {
+        /** [site] is the member whose `@Value` names the key: the finding is cited there, not at the class's first line. */
+        private fun bindConfig(from: String, text: String, site: Node? = null) {
             val (key, hasDefault) = placeholder(text) ?: return
             val id = "config:$key"
             if (key !in config) {
                 store.node(Node(id, NodeKind.CONFIG_KEY, key, Origin.REPO, attrs = mapOf("defined" to "false")))
                 if (!hasDefault) {
-                    finding(from, "undefined-config-key", key, "warning", "Config key '$key' is used but not defined in any application file")
+                    finding(from, "undefined-config-key", key, "warning", "Config key '$key' is used but not defined in any application file", site)
                 }
             }
             store.edge(Edge(from, id, EdgeKind.BINDS_CONFIG, Resolution.EXACT))
@@ -106,8 +107,8 @@ class SpringPlugin : FrameworkPlugin {
         private fun configBindings() {
             for (cls in classes.values) {
                 for (member in members(cls)) {
-                    annotationsOf(member)[VALUE]?.get("value")?.let { bindConfig(cls.id, it) }
-                    for (p in Attrs.params(member)) p.annotations[VALUE]?.get("value")?.let { bindConfig(cls.id, it) }
+                    annotationsOf(member)[VALUE]?.get("value")?.let { bindConfig(cls.id, it, member) }
+                    for (p in Attrs.params(member)) p.annotations[VALUE]?.get("value")?.let { bindConfig(cls.id, it, member) }
                 }
                 val props = annotationsOf(cls)[CONFIGURATION_PROPERTIES] ?: continue
                 val prefix = (props["prefix"] ?: props["value"] ?: "").trim()
@@ -441,8 +442,7 @@ class SpringPlugin : FrameworkPlugin {
                 // callee, so a send line cannot tell the two apart. A @Value read that is not a topic (a region, a name) in a
                 // method that sends would add a phantom topic; a known topic among the candidates takes precedence below
                 val valueFields = store.edgesFrom(m.id, EdgeKind.READS_FIELD)
-                    .mapNotNull { e -> store.node(e.to)?.let { annotationsOf(it)[VALUE]?.get("value") } }
-                    .onEach { bindConfig(m.id.substringBefore('#'), it) }
+                    .mapNotNull { e -> store.node(e.to)?.let { f -> annotationsOf(f)[VALUE]?.get("value")?.also { bindConfig(m.id.substringBefore('#'), it, f) } } }
                     .map { resolve(it) }.filter { it.isNotEmpty() }.toSet()
                 val annotationValues = annotationsOf(m).values.flatMap { it.values }.toSet()
                 val candidates = valueFields.ifEmpty { Attrs.strings(m).filter { TOPIC_NAME.matches(it) && it !in annotationValues }.toSet() }.ifEmpty { topicGetters(m) }
@@ -545,9 +545,9 @@ class SpringPlugin : FrameworkPlugin {
             }
         }
 
-        private fun finding(subject: String, kind: String, key: String, severity: String, message: String) {
+        private fun finding(subject: String, kind: String, key: String, severity: String, message: String, site: Node? = null) {
             val id = "finding:$kind:$subject->$key"
-            val at = store.node(subject)
+            val at = site ?: store.node(subject)
             store.node(Node(id, NodeKind.FINDING, message, at?.origin ?: Origin.REPO, file = at?.file, startLine = at?.startLine,
                 module = at?.module, attrs = mapOf("kind" to kind, "severity" to severity, "subject" to subject, "key" to key)))
             store.edge(Edge(subject, id, EdgeKind.HAS_FINDING, Resolution.EXACT))

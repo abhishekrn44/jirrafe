@@ -113,6 +113,7 @@ class SpringPluginTest {
         val finding = store.edgesFrom("com.example.orders.OrderService", EdgeKind.HAS_FINDING).map { store.node(it.to)!! }
             .single { it.attrs["kind"] == "undefined-config-key" }
         assertEquals("orders.undefined-key", finding.attrs["key"])
+        assertEquals(28, finding.startLine, "cited at the @Value field, not at the class")
     }
 
     @Test
