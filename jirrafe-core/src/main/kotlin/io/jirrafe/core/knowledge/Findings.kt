@@ -56,7 +56,7 @@ internal object Findings {
 
     fun compute(
         g: ClassGraph, layers: Array<String?>, gods: List<Int>, tested: Set<String>, manifest: Manifest?, root: Path, store: GraphStore,
-    ): List<Finding> = deadCode(g) + cyclicPackages(g) + layerViolations(g, layers) + versionConflicts(manifest) +
+    ): List<Finding> = deadCode(g, store) + cyclicPackages(g) + layerViolations(g, layers) + versionConflicts(manifest) +
         untestedGods(g, gods, tested) + sarif(manifest, root, store)
 
     // ---- dead code -----------------------------------------------------------------------------
@@ -73,48 +73,152 @@ internal object Findings {
         return s.substring(at).replace(" extends ", ",").replace(" implements ", ",").split(',').count { it.isNotBlank() }
     }
 
-    private fun deadCode(g: ClassGraph): List<Finding> {
-        val incoming = HashMap<String, MutableSet<EdgeKind>>()
-        for (list in g.outgoing.values) for (e in list) if (e.kind != EdgeKind.CONTAINS) incoming.getOrPut(e.to) { HashSet() } += e.kind
-        val overrides = g.outgoing.values.flatten().filter { it.kind == EdgeKind.OVERRIDES }
-        val overriding = overrides.map { it.from }.toSet()
-        val overridden = overrides.map { it.to }.toSet()
-        val out = ArrayList<Finding>()
-        for (cls in g.classes) {
-            if (cls.origin != Origin.REPO || cls.kind == NodeKind.ANNOTATION) continue
-            val referenced = incoming[cls.id]?.any { it != EdgeKind.CONTAINS } == true
-            val members = g.outgoing[cls.id].orEmpty().filter { it.kind == EdgeKind.CONTAINS }.map { it.to }
-            val memberReferenced = members.any { incoming[it]?.any { k -> k == EdgeKind.CALLS || k == EdgeKind.DISPATCHES_TO || k == EdgeKind.READS_FIELD || k == EdgeKind.WRITES_FIELD } == true }
-            val annotated = Attrs.annotations(cls).isNotEmpty()
-            val hasMain = members.any { it.endsWith("#main(java.lang.String[])") }
-            if (!referenced && !memberReferenced && !annotated && !hasMain) {
-                out += Finding(cls.id, "dead-code", "class", "info", "${g.shortName(cls.id)} is never referenced")
-                continue
-            }
-            if (cls.kind == NodeKind.INTERFACE) continue
-            // A supertype whose methods the graph cannot see (java.sql.Connection, a framework base class) declares a
-            // contract the framework calls: `HibernateConnection#commit()` has no caller in the repo and is not dead.
-            // The signature names every supertype; an edge exists only to an indexed one, and a dependency's type
-            // is a stub holding only the members the repo happens to call. Either way a public method may be that
-            // contract and is not judged.
-            val supertypes = g.outgoing[cls.id].orEmpty().filter { it.kind == EdgeKind.EXTENDS || it.kind == EdgeKind.IMPLEMENTS }
-            val externalContract = namedSupertypes(cls.signature.orEmpty()) > supertypes.size ||
-                supertypes.any { e -> g.nodes[e.to]?.origin == Origin.EXTERNAL }
+    /** Annotations that make a method a framework entry: the container calls it, so indexed code need not. */
+    private val ENTRY_ANNOTATIONS = setOf(
+        "Scheduled", "Schedules", "PostConstruct", "PreDestroy", "EventListener", "TransactionalEventListener", "ApplicationModuleListener",
+        "KafkaListener", "KafkaHandler", "RabbitListener", "RabbitHandler", "JmsListener", "SqsListener", "StreamListener", "ServiceActivator",
+        "Bean", "ExceptionHandler", "InitBinder", "ModelAttribute", "MessageMapping", "SubscribeMapping", "MessageExceptionHandler",
+        "Before", "After", "Around", "AfterReturning", "AfterThrowing", "Pointcut",
+        "Test", "ParameterizedTest", "RepeatedTest", "TestFactory", "BeforeEach", "AfterEach", "BeforeAll", "AfterAll", "DynamicPropertySource",
+        "JsonCreator", "JsonValue", "JsonAnySetter", "JsonAnyGetter", "PrePersist", "PreUpdate", "PostLoad", "PreRemove", "PostPersist", "PostUpdate", "PostRemove",
+        "RequestMapping", "GetMapping", "PostMapping", "PutMapping", "DeleteMapping", "PatchMapping", "QueryMapping", "MutationMapping", "SchemaMapping",
+    )
+
+    /** A class the container instantiates and drives by itself: nothing in indexed code has to name it. */
+    private val LIVE_CLASS_ANNOTATIONS = setOf("Configuration", "AutoConfiguration", "SpringBootApplication", "ControllerAdvice", "RestControllerAdvice", "Aspect", "WebFilter", "ServerEndpoint")
+    private val STEREOTYPES = setOf("Component", "Service", "Repository", "Controller", "RestController")
+
+    /** An edge that makes its target used: one of these from live code is what "referenced" means below. */
+    private val REFERENCE = setOf(
+        EdgeKind.USES_TYPE, EdgeKind.EXTENDS, EdgeKind.IMPLEMENTS, EdgeKind.INJECTS, EdgeKind.MAPS_TO_TABLE,
+        EdgeKind.CALLS, EdgeKind.DISPATCHES_TO, EdgeKind.READS_FIELD, EdgeKind.WRITES_FIELD,
+    )
+
+    /**
+     * What is declared and used by nothing: a class no live code references (or only its tests, or only another dead
+     * class), a method no live code calls (nor calls through the interface it implements), a constant nothing reads.
+     * "Live" leaves out tests and generated code; "indexed" is the caveat for reflection, SpEL and templates, which the
+     * graph does not see. Before, any annotation on a class or a method counted as life, a file importing a class
+     * counted as a reference, overriding anything was a pass, and fields were not judged: on user-management the
+     * uncalled `fetchRoles` passed because it overrides its interface, and on audio-metadata-service the unused
+     * `TrackCacheRepository` passed because its test names it. A module indexed from bytecode may lack the edges
+     * that reference what is judged here, so a repository with one such module is not judged at all.
+     */
+    private fun deadCode(g: ClassGraph, store: GraphStore): List<Finding> {
+        if (g.nodes.values.any { it.kind == NodeKind.MODULE && it.module?.let { m -> store.meta("health:$m") }?.let { h -> h != "source" } == true }) return emptyList()
+        val top = { id: String -> id.substringBefore('#').substringBefore('$') }
+        val isTest = { id: String -> g.nodes[top(id)]?.attrs?.get("test") == "true" || g.nodes[id]?.attrs?.get("test") == "true" }
+        // Lombok's members carry `lombok.Generated` only when lombok.config asks for it; without it a setter sits on
+        // the `@Setter` line above the class keyword and a getter on its field's line (the field's own node starts
+        // on its annotation, `@Version` above `private int version`), with no range of its own, which no written
+        // method has. So: a method of one line, on a line a field spans or above the first member of the class
+        val generatedIds = HashSet<String>()
+        for (cls in g.nodes.values) {
+            if (!ClassGraph.isCode(cls)) continue
+            val members = g.outgoing[cls.id].orEmpty().filter { it.kind == EdgeKind.CONTAINS }.mapNotNull { g.nodes[it.to] }
+            val fieldSpans = members.filter { it.kind == NodeKind.FIELD && it.startLine != null }.map { (it.startLine ?: 0)..(it.endLine ?: it.startLine ?: 0) }
+            val firstMember = members.mapNotNull { m -> m.startLine?.takeIf { m.kind == NodeKind.FIELD || (m.endLine ?: 0) > it } }.minOrNull() ?: Int.MAX_VALUE
             for (m in members) {
+                if (m.kind != NodeKind.METHOD && m.kind != NodeKind.CONSTRUCTOR) continue
+                val line = m.startLine ?: continue
+                if (line == m.endLine && (line < firstMember || fieldSpans.any { line in it })) generatedIds += m.id
+            }
+        }
+        val generated = { id: String -> id in generatedIds || "lombok.Generated" in (g.nodes[id]?.attrs?.get(Attrs.ANNOTATIONS) ?: "") }
+        val beanType = g.nodes.values.filter { it.kind == NodeKind.BEAN }.associate { it.id to it.attrs["type"] }
+        val scheduled = g.nodes.values.filter { it.kind == NodeKind.SCHEDULED_JOB }.map { it.fqn }.toSet()
+        // who references what: the referring top-level class per class (a class's own members and nested types aside),
+        // the callers per method, the readers per field; tests kept apart, generated code left out
+        val refs = HashMap<String, MutableSet<String>>(); val testRefs = HashMap<String, MutableSet<String>>()
+        val callers = HashMap<String, MutableSet<String>>(); val testCallers = HashMap<String, MutableSet<String>>()
+        val readers = HashMap<String, MutableSet<String>>()
+        for (list in g.outgoing.values) for (e in list) {
+            if (e.kind !in REFERENCE || generated(e.from)) continue
+            val target = if (e.kind == EdgeKind.INJECTS) (beanType[e.to] ?: e.to) else e.to
+            val test = isTest(e.from)
+            if (e.kind == EdgeKind.CALLS || e.kind == EdgeKind.DISPATCHES_TO) (if (test) testCallers else callers).getOrPut(target) { HashSet() } += e.from
+            if (e.kind == EdgeKind.READS_FIELD && !test) readers.getOrPut(target) { HashSet() } += e.from
+            val t = top(target); val f = top(e.from)
+            if (f == t) continue
+            (if (test) testRefs else refs).getOrPut(t) { HashSet() } += f
+        }
+        fun names(id: String) = g.nodes[id]?.let { n -> Attrs.annotations(n).keys.map { it.substringAfterLast('.') } }.orEmpty()
+        fun entry(m: String) = m.substringAfter('#').startsWith("main(") || m in scheduled || names(m).any { it in ENTRY_ANNOTATIONS } ||
+            g.outgoing[m].orEmpty().any { it.kind == EdgeKind.HANDLES_ROUTE || it.kind == EdgeKind.CONSUMES_FROM || it.kind == EdgeKind.PROVIDES_BEAN }
+        fun members(cls: Node) = g.outgoing[cls.id].orEmpty().filter { it.kind == EdgeKind.CONTAINS }.map { it.to }
+        // A supertype whose methods the graph cannot see (java.sql.Connection, a framework base class) declares a
+        // contract the framework calls: `HibernateConnection#commit()` has no caller in the repo and is not dead.
+        // The signature names every supertype; an edge exists only to an indexed one, and a dependency's type
+        // is a stub holding only the members the repo happens to call. Either way a public method may be that
+        // contract and is not judged, and the class may be instantiated by type and is not judged either.
+        fun externalContract(cls: Node): Boolean {
+            val supertypes = g.outgoing[cls.id].orEmpty().filter { it.kind == EdgeKind.EXTENDS || it.kind == EdgeKind.IMPLEMENTS }
+            return namedSupertypes(cls.signature.orEmpty()) > supertypes.size || supertypes.any { e -> g.nodes[e.to]?.origin == Origin.EXTERNAL }
+        }
+        // a Spring Data repository extends a framework interface, and the framework consumes nothing by that type:
+        // only injection does, so the external supertype spares a class, not a bean interface
+        fun providesBean(cls: Node) = g.outgoing[cls.id].orEmpty().any { it.kind == EdgeKind.PROVIDES_BEAN }
+        val judged = g.classes.filter { cls ->
+            cls.origin == Origin.REPO && cls.kind != NodeKind.ANNOTATION && '$' !in cls.id &&
+                names(cls.id).none { it in LIVE_CLASS_ANNOTATIONS || it.startsWith("Enable") } &&
+                ((cls.kind == NodeKind.INTERFACE && providesBean(cls)) || !externalContract(cls)) && members(cls).none { entry(it) }
+        }
+        // dead when nothing references it, or when everything that does is itself dead: TrackCache is used only by
+        // TrackCacheRepository, which nothing injects
+        val dead = HashMap<String, String?>() // class -> the dead class it hangs from, null when nothing refers to it at all
+        var changed = true
+        while (changed) {
+            changed = false
+            for (cls in judged) {
+                if (cls.id in dead) continue
+                val rs = refs[cls.id].orEmpty()
+                if (rs.isEmpty() || rs.all { it in dead }) { dead[cls.id] = rs.firstOrNull(); changed = true }
+            }
+        }
+        val out = ArrayList<Finding>()
+        for ((id, via) in dead) {
+            val name = g.shortName(id)
+            val msg = when {
+                via != null -> "$name is referenced only by ${g.shortName(via)}, which nothing references"
+                names(id).any { it in STEREOTYPES } || g.nodes[id]?.let { providesBean(it) } == true -> "$name is a bean no indexed class injects"
+                testRefs[id].orEmpty().isNotEmpty() -> "$name is referenced by no indexed code outside its tests"
+                else -> "$name is never referenced"
+            }
+            out += Finding(id, "dead-code", "class", "info", msg)
+        }
+        val overridden = g.outgoing.values.flatten().filter { it.kind == EdgeKind.OVERRIDES }.map { it.to }.toSet()
+        for (cls in g.classes) {
+            if (cls.origin != Origin.REPO || top(cls.id) in dead || cls.kind == NodeKind.INTERFACE || cls.kind == NodeKind.ANNOTATION) continue
+            val contract = externalContract(cls)
+            for (m in members(cls)) {
                 val node = g.nodes[m] ?: continue
+                val sig = node.signature.orEmpty()
+                if (node.kind == NodeKind.FIELD) {
+                    val name = m.substringAfter('#')
+                    val type = sig.substringAfter(": ", "")
+                    val logger = type.endsWith("Logger") || type.endsWith(".Log") || name.lowercase() in setOf("log", "logger")
+                    if ("static" in sig && "final" in sig && name != "serialVersionUID" && !logger && !generated(m) && readers[m].isNullOrEmpty())
+                        out += Finding(m, "dead-code", "field", "info", "${g.shortName(m)} is never read")
+                    continue
+                }
                 if (node.kind != NodeKind.METHOD) continue
                 val name = m.substringAfter('#').substringBefore('(')
-                if (name in CONTRACT_METHODS || name.startsWith("lambda$") || name.startsWith("<")) continue
+                if (name in CONTRACT_METHODS || name.startsWith("lambda$") || name.startsWith("<") || generated(m) || entry(m)) continue
+                // an accessor of a field the class declares is what Jackson, JPA and Mongo call by reflection
+                val property = name.removePrefix("get").removePrefix("set").removePrefix("is").replaceFirstChar { it.lowercase() }
+                if (name != property && property.isNotEmpty() && members(cls).any { it == "${cls.id}#$property" }) continue
                 if (cls.kind == NodeKind.ENUM && (name == "values" || name == "valueOf")) continue
                 if (cls.kind == NodeKind.RECORD && m.endsWith("()")) continue // component accessor
-                if (m in overriding || m in overridden || Attrs.annotations(node).isNotEmpty()) continue
-                val sig = node.signature.orEmpty()
-                if ("abstract" in sig) continue
-                if (incoming[m]?.any { it == EdgeKind.CALLS || it == EdgeKind.DISPATCHES_TO } == true) continue
-                if (g.outgoing[m].orEmpty().any { it.kind == EdgeKind.HANDLES_ROUTE || it.kind == EdgeKind.CONSUMES_FROM }) continue // entry point
+                if (m in overridden || "abstract" in sig || !callers[m].isNullOrEmpty()) continue
                 val visible = "public" in sig || "protected" in sig
-                if (visible && externalContract) continue
-                out += Finding(m, "dead-code", "method", if (visible) "info" else "warning", "${g.shortName(m)} has no callers")
+                if (visible && contract) continue
+                // an implementation is dead only when nothing calls through what it implements either, and an override
+                // of something outside the graph is the framework's to call
+                val overrides = g.outgoing[m].orEmpty().filter { it.kind == EdgeKind.OVERRIDES }.map { it.to }
+                if (overrides.any { g.nodes[it]?.origin != Origin.REPO || !callers[it].isNullOrEmpty() }) continue
+                val msg = "${g.shortName(m)} has no callers" + (if (testCallers[m].isNullOrEmpty()) "" else " outside its tests") +
+                    (overrides.firstOrNull()?.let { ", nor does ${g.shortName(it)} which it implements" } ?: "")
+                out += Finding(m, "dead-code", "method", if (visible) "info" else "warning", msg)
             }
         }
         return out

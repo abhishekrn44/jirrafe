@@ -1285,6 +1285,36 @@ class Queries(
                     }
             }
         facts += deadEnds.sortedByDescending { d -> stems.count { st -> d.first.substringBefore(" is set").lowercase().contains(st.lowercase().take(5)) } }.take(2)
+        // What is declared and used by nothing, as the dead-code findings on declarations in the question's scope: the
+        // packed classes and their members, their packages, and the classes a question word names. "How are lookups
+        // cached" is answered in part by TrackCacheRepository, which nothing injects, and no path from the question
+        // reaches a class nothing references; a whole-file reader sees it beside the live one. A declaration the
+        // question names comes first, a dead member of a packed class next, a dead neighbour last and only one
+        val scopeOwners = packAll.map { owner(it.id).substringBefore('$') }.toSet()
+        val namedDead = stems.filter { it.length >= 4 }.flatMap { st -> store.nodesLike(st.take(5), 20, CODE).map { it.id }.filter { simpleName(it).lowercase().contains(st.lowercase().take(5)) } }.toSet()
+        val neighbours = scopeOwners.map { it.substringBeforeLast('.', "") }.filter { it.isNotEmpty() }.toSet()
+            .flatMap { p -> store.edgesFrom(p, EdgeKind.CONTAINS).map { it.to } }.filter { store.node(it)?.kind in CODE }.toSet()
+        val absences = (namedDead + scopeOwners + neighbours).flatMap { c -> listOf(c) + store.edgesFrom(c, EdgeKind.CONTAINS).map { it.to } }.distinct()
+            .flatMap { id -> store.edgesFrom(id, EdgeKind.HAS_FINDING).mapNotNull { store.node(it.to) }.filter { it.attrs["kind"] == "dead-code" }.map { f -> id to f } }
+            .distinctBy { it.second.id }
+            .mapNotNull { (id, f) ->
+                val n = store.node(id) ?: return@mapNotNull null
+                val cls = owner(id).substringBefore('$')
+                val rank = when {
+                    stems.any { st -> val w = st.lowercase().take(5); simpleName(id).lowercase().contains(w) || cls.substringAfterLast('.').lowercase().contains(w) } -> 2
+                    cls in scopeOwners -> 1
+                    else -> 0
+                }
+                // the declaration as a source line, so the fact is cited like the others
+                val decl = sources?.read(n, 0)?.text?.lines()?.map { it.trim() }?.let { ls ->
+                    (when (n.kind) {
+                        in CODE -> ls.firstOrNull { Regex("\\b(class|interface|enum|record)\\b").containsMatchIn(it) }
+                        NodeKind.METHOD, NodeKind.CONSTRUCTOR -> ls.firstOrNull { it.isNotBlank() && !it.startsWith("@") }
+                        else -> null
+                    }) ?: ls.firstOrNull { it.isNotBlank() } }
+                Triple(f.fqn + (decl?.let { ":  $it" } ?: ""), at(n) ?: return@mapNotNull null, rank)
+            }.sortedByDescending { it.third }
+        facts += absences.filter { it.third >= 1 }.take(3).map { it.first to it.second }
         facts += unguarded
         facts += ownInstances
         // a unique column only when the question names it: the username constraint answers "is the name taken", and on
@@ -1292,6 +1322,7 @@ class Queries(
         facts += constraints.filter { (t, _) -> t.substringBefore(':').substringAfter('.').lowercase().let { col -> stems.any { st -> col.contains(st.lowercase().take(5)) } } }
         facts += callerFacts
         facts += readerFacts
+        facts += absences.filter { it.third == 0 }.take(1).map { it.first to it.second }
         // the framework declaration that applies to a shown class, as the line that names it
         // (the filter is a field with its own name, so the lines are picked by what they declare, not by a class name)
         val routePaths = packAll.flatMap { b -> store.edgesFrom(b.id, EdgeKind.HANDLES_ROUTE).mapNotNull { store.node(it.to)?.fqn?.substringAfter(' ') } }
@@ -1444,7 +1475,8 @@ class Queries(
                     // outscored the method that generates a password, and an agent cannot open either of them
                     // and a body before a one-line accessor, as the word search orders them: five getters and setters
                     // of `password` filled the list while the method that generates one sat sixth
-                    val ranked = (listedIds + codeHits.map { it.key }.sortedWith(compareBy({ if (nodes[it]?.origin == Origin.REPO) 0 else 1 }, { nodes[it]?.let { n -> rank(n) } ?: 0 }))).distinct().filter { it !in packed }
+                    val ranked = (listedIds + codeHits.map { it.key }.sortedWith(compareBy({ if (nodes[it]?.origin == Origin.REPO) 0 else 1 }, { nodes[it]?.let { n -> rank(n) } ?: 0 }))).distinct()
+                        .filter { it !in packed && nodes[it]?.kind != NodeKind.FINDING } // a finding in scope is a fact above, not a match to follow
                     // five, not three: "password generated" led with generateToken, and the generator, fourth by score,
                     // was cut from the list an agent would have followed it from
                     // and when the budget binds (level three and under), the map yields to the bodies: two, not five

@@ -222,4 +222,14 @@ class QueriesTest {
         assertContains(Render.explain(e), "indexed from bytecode, not source")
         assertTrue(!q.explain("how are orders listed?").containsKey("degraded"), "a healthy module says nothing")
     }
+
+    @Test
+    fun `what nothing uses is a fact when the question's scope holds it`() {
+        val opened = Render.explain(q.explain("how are orders opened"))
+        assertContains(opened, "MAX_OPEN is never read")
+        assertContains(opened, "OrderService.export has no callers, nor does ReportApi.export which it implements")
+        val legacy = Render.explain(q.explain("how does the legacy export run"))
+        assertContains(legacy, "LegacyExport is referenced by no indexed code outside its tests")
+        assertContains(legacy, "LegacyRow is referenced only by LegacyExport")
+    }
 }

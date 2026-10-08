@@ -68,7 +68,7 @@ class McpServerTest {
         assertEquals(1, client.call("routes")["count"]!!.jsonPrimitive.content.toInt())
         assertEquals(0, client.call("topics")["count"]!!.jsonPrimitive.content.toInt())
         assertEquals(1, client.call("config", "key_prefix" to "orders")["count"]!!.jsonPrimitive.content.toInt())
-        assertEquals(1, client.call("beans")["count"]!!.jsonPrimitive.content.toInt())
+        assertEquals(2, client.call("beans")["count"]!!.jsonPrimitive.content.toInt(), "orderService and the uninjected auditRepository")
         assertTrue(client.call("findings", "severity" to "warning")["count"]!!.jsonPrimitive.content.toInt() > 0)
         assertTrue(client.call("dependencies", "module" to ":app")["modules"]!!.jsonArray.size == 1)
         val explain = client.call("explain", "question" to "how are orders listed", "token_budget" to 800)

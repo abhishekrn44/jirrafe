@@ -65,6 +65,17 @@ class KnowledgeTest {
         val findings = store.nodes(NodeKind.FINDING).groupBy { it.attrs["kind"] }
         assertEquals("a.OrderService#unused()", findings["dead-code"]!!.single { it.attrs["severity"] == "warning" }.attrs["subject"])
         assertTrue(findings["dead-code"]!!.none { it.attrs["subject"] == "a.JdbcConn#rollback()" }, "a public method of a class implementing an interface outside the graph is a contract, not dead code")
+        val dead = findings["dead-code"]!!.associate { it.attrs["subject"]!! to it.fqn }
+        assertEquals("LegacyExport is referenced by no indexed code outside its tests", dead["c.LegacyExport"])
+        assertEquals("LegacyRow is referenced only by LegacyExport, which nothing references", dead["c.LegacyRow"])
+        assertTrue("c.LegacyExport#run()" !in dead, "a dead class's members are covered by the class: $dead")
+        assertContains(dead["a.OrderService#MAX_OPEN"]!!, "is never read")
+        assertContains(dead["a.OrderService#export()"]!!, "which it implements")
+        assertTrue("a.ReportApi" !in dead && "a.ReportApi#export()" !in dead, "an implemented interface is referenced, and its method is reported through the implementation")
+        assertTrue("a.Order#setName(java.lang.String)" !in dead, "a member on the class line is generated: $dead")
+        assertTrue("a.Order#setId(long)" !in dead, "an accessor of a declared field is the framework's to call: $dead")
+        assertTrue("a.OrderService#log" !in dead, "a logger is not judged")
+        assertEquals("AuditRepository is a bean no indexed class injects", dead["a.AuditRepository"], "a repository interface is judged by injection, its framework supertype notwithstanding")
         assertEquals(1, findings["cyclic-packages"]!!.size)
         assertContains(findings["cyclic-packages"]!!.single().fqn, "a <-> b")
         assertTrue(store.edgesFrom("b", EdgeKind.HAS_FINDING).isNotEmpty(), "cycle attached to every package")
