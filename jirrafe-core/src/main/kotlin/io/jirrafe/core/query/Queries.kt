@@ -887,7 +887,11 @@ class Queries(
         for (c in (listOfNotNull(flowLead) + candidates).distinct()) { // the covering flow's entry walks first
             if (listing) break
             if (walks == PACK_LEADS || spine.size >= PACK_MAX || c in spine) continue
-            if (walks > 0 && (hits[c] ?: 0.0) < (hits[lead] ?: 0.0) * NEAR_MISS) break // a further chain only for a match that could as well be the answer
+            // a further chain only for a match that could as well be the answer; a method with the lead's own name in another
+            // class that the lead's chain never reached is one (MasterController.fetchRoles calls fetchStates, and the
+            // MasterServiceImpl.fetchRoles nothing calls is the roles query and the bug): walked at any score
+            val sameName = lead != null && simpleName(c) == simpleName(lead) && owner(c) != owner(lead)
+            if (walks > 0 && !sameName && (hits[c] ?: 0.0) < (hits[lead] ?: 0.0) * NEAR_MISS) break
             val steps = (if (walks == 0 && entry != null) listOf(entry) else emptyList()) + walk(c, if (walks == 0) PACK_STEPS else PACK_STEPS_MORE).filter { it !in spine }
             if (System.getenv("JIRRAFE_DEBUG") == "1") System.err.println("debug: walk $walks from ${simpleName(c)} (%.2f) entry=${entry?.let { simpleName(it) }} -> ${steps.map { simpleName(it) }}".format(hits[c] ?: 0.0))
             spine += steps
@@ -1045,16 +1049,18 @@ class Queries(
         // "what does it return" is answered by a shape, not a body. Types the packed classes use, model layer only,
         // the ones named in the packed code first.
         val packText = packAll.joinToString("\n") { it.text }
-        val data = spine.map { owner(it) }.distinct().flatMap { c -> store.edgesFrom(c, EdgeKind.USES_TYPE).map { it.to } }.distinct()
-            .mapNotNull { store.node(it) }
-            .filter { it.kind in CODE && it.origin == Origin.REPO && it.attrs["layer"] == "model" && it.id.substringAfterLast('.').substringAfterLast('$') in packText }
-            .take(DATA_CLASSES)
-            .map { c -> c to store.edgesFrom(c.id, EdgeKind.CONTAINS).mapNotNull { store.node(it.to) }.filter { it.kind == NodeKind.FIELD }.map { f -> f.id.substringAfterLast('#') + (if (Attrs.annotations(f).values.any { it["unique"] == "true" }) " (unique)" else "") }.filter { !it.startsWith("this") && '$' !in it }.take(DATA_FIELDS) }
-        // a constraint the judge credited to grep while we had it as one word: a word in a list is not evidence a model quotes,
-        // the annotation line with its location is
+        // the entity behind each repository the packed code queries: a local `List<Role> role = roleRepo.findAll()` leaves no
+        // USES_TYPE edge, and the table name and columns are the data the question is about
         val queriedEntities = packAll.flatMap { b -> store.edgesFrom(b.id, EdgeKind.CALLS).map { owner(it.to) } }.distinct()
             .filter { store.node(it)?.attrs?.get("layer") == "repository" }
             .mapNotNull { r -> store.node(r)?.attrs?.get("supertypes")?.substringAfter('<', "")?.substringBefore(',')?.takeIf { it.isNotEmpty() }?.let { store.node(it) } }
+        val data = (queriedEntities + spine.map { owner(it) }.distinct().flatMap { c -> store.edgesFrom(c, EdgeKind.USES_TYPE).map { it.to } }.distinct()
+            .mapNotNull { store.node(it) }
+            .filter { it.kind in CODE && it.origin == Origin.REPO && it.attrs["layer"] == "model" && it.id.substringAfterLast('.').substringAfterLast('$') in packText })
+            .distinctBy { it.id }.take(DATA_CLASSES)
+            .map { c -> c to store.edgesFrom(c.id, EdgeKind.CONTAINS).mapNotNull { store.node(it.to) }.filter { it.kind == NodeKind.FIELD }.map { f -> f.id.substringAfterLast('#') + (if (Attrs.annotations(f).values.any { it["unique"] == "true" }) " (unique)" else "") }.filter { !it.startsWith("this") && '$' !in it }.take(DATA_FIELDS) }
+        // a constraint the judge credited to grep while we had it as one word: a word in a list is not evidence a model quotes,
+        // the annotation line with its location is
         val constraints = (data.map { it.first } + queriedEntities).distinctBy { it.id }.flatMap { c -> store.edgesFrom(c.id, EdgeKind.CONTAINS).mapNotNull { store.node(it.to) }
             .filter { f -> f.kind == NodeKind.FIELD && Attrs.annotations(f).values.any { it["unique"] == "true" } }
             .mapNotNull { f -> sources?.read(f, 0)?.let { src -> src.text.lines().withIndex().firstOrNull { "unique" in it.value }?.let { (i, t) -> "${simpleName(c.id)}.${f.id.substringAfterLast('#')}:  ${t.trim()}" to "${relative(src.file)}:${src.startLine + i}" } } } }.take(3)
@@ -1110,9 +1116,26 @@ class Queries(
         // audit columns are set everywhere and read by nobody; the dead end worth a line is the one the question is about
         // worth, when the cap binds: a dead end is the fact grep never finds and the judge rewarded every time; a constraint is
         // one line that answers "how is it rejected"; the callers came last to the slots and were filling all eight
+        // where a field the question names is read: "how are roles fetched" is also User.role, read at login into
+        // ROLE_<ROLE> and into the token's claim; the entity is two hops from any chain, the reader lines are one fact each
+        val fieldWords = stems.map { it.lowercase().removeSuffix("s") }.filter { it.length >= 3 }.toSet()
+        val readerFacts = store.nodes(NodeKind.FIELD)
+            .filter { f -> f.origin == Origin.REPO && f.id.substringAfterLast('#').lowercase() in fieldWords && store.node(owner(f.id))?.attrs?.get("table") != null && owner(f.id) !in spineOwners } // an entity's column, not a DTO's
+            .take(2).flatMap { f ->
+                val prop = f.id.substringAfterLast('#').replaceFirstChar { it.uppercase() }
+                val getters = store.edgesFrom(owner(f.id), EdgeKind.CONTAINS).map { it.to }.filter { simpleName(it) == "get$prop" || simpleName(it) == "is$prop" }
+                (store.edgesTo(f.id, EdgeKind.READS_FIELD) + getters.flatMap { g -> store.edgesTo(g, EdgeKind.CALLS) })
+                    .filter { e -> !generated(e.from) && owner(e.from) != owner(f.id) && e.line != null }
+                    .distinctBy { owner(it.from) }.take(2).mapNotNull { e ->
+                        val reader = store.node(e.from) ?: return@mapNotNull null
+                        sources?.read(reader, 0)?.let { src -> src.text.lines().getOrNull(e.line!! - src.startLine)?.let { t ->
+                            "${simpleName(owner(e.from))}.${simpleName(e.from)} reads ${simpleName(owner(f.id))}.${f.id.substringAfterLast('#')}:  ${t.trim()}" to "${relative(src.file)}:${e.line}" } }
+                    }
+            }
         facts += deadEnds.sortedByDescending { d -> stems.count { st -> d.first.substringBefore(" is set").lowercase().contains(st.lowercase().take(5)) } }.take(2)
         facts += constraints
         facts += callerFacts
+        facts += readerFacts
         // the framework declaration that applies to a shown class, as the line that names it
         // (the filter is a field with its own name, so the lines are picked by what they declare, not by a class name)
         val routePaths = packAll.flatMap { b -> store.edgesFrom(b.id, EdgeKind.HANDLES_ROUTE).mapNotNull { store.node(it.to)?.fqn?.substringAfter(' ') } }
