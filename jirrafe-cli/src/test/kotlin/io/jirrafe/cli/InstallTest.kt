@@ -82,4 +82,22 @@ class InstallTest {
         Init().parse(listOf("--dir", project.toString()))
         assertEquals(1, Files.readAllLines(project.resolve(".gitignore")).count { it == ".jirrafe/" })
     }
+
+    @Test
+    fun `git hooks are written once, index the given root, and strip cleanly`() {
+        Files.createDirectories(root.resolve(".git/hooks"))
+        Files.writeString(root.resolve(".git/hooks/post-commit"), "#!/bin/sh\necho mine\n")
+        Install.gitHooks(root, "jirrafe")
+        Install.gitHooks(root, "jirrafe")
+        val hook = Files.readString(root.resolve(".git/hooks/post-commit"))
+        assertEquals(1, Regex("jirrafe:begin").findAll(hook).count(), "one block after two installs")
+        assertTrue(hook.startsWith("#!/bin/sh\necho mine"), "the existing hook is kept")
+        assertContains(hook, "index --dir")
+        assertContains(hook, "&& \"jirrafe\" knowledge --dir", message = "knowledge follows the index, or the flows are gone until the next build")
+        assertContains(hook, "graph.db\" ] &&")
+        assertTrue(Files.exists(root.resolve(".git/hooks/post-checkout")) && Files.exists(root.resolve(".git/hooks/post-merge")))
+        Install.gitHooks(root, "jirrafe", remove = true)
+        assertEquals("#!/bin/sh\necho mine\n", Files.readString(root.resolve(".git/hooks/post-commit")), "only our block is stripped")
+        assertTrue(!Files.exists(root.resolve(".git/hooks/post-merge")), "a hook that was only ours is deleted")
+    }
 }

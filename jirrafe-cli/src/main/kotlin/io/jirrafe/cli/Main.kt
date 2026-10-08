@@ -374,9 +374,16 @@ class InstallCommand : CoreCliktCommand(name = "install") {
     private val dir: Path by dirOption()
     private val client: String by option("--client", help = Install.CLIENTS.joinToString(" | ")).required()
     private val command: String by option("--command", help = "how the client should start jirrafe (default: jirrafe on PATH)").default("jirrafe")
+    private val gitHooks: Boolean by option("--git-hooks", help = "also install post-commit, post-checkout and post-merge hooks that re-index in the background").flag()
+    private val removeGitHooks: Boolean by option("--remove-git-hooks", help = "strip the jirrafe block from those hooks").flag()
 
     override fun run() {
         for (f in Install.run(client, dir, command)) echo("wrote $f")
+        if (gitHooks || removeGitHooks) {
+            val hooks = Install.gitHooks(dir, command, remove = removeGitHooks)
+            if (hooks.isEmpty()) echo("no .git directory above $dir; hooks not installed")
+            for (f in hooks) echo((if (removeGitHooks) "stripped " else "wrote ") + f)
+        }
     }
 }
 

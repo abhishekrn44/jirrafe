@@ -191,6 +191,49 @@ object Install {
     }
 
     /** Adds or replaces the marked section in a Markdown or rules file. */
+    /**
+     * Git hooks that re-index after a commit, checkout or merge, so the next question is not answered from a graph the
+     * agent must first be told is stale (one wasted turn per question after a change). `index` hashes the sources and
+     * re-extracts only the modules that changed, and `knowledge` follows because an incremental index drops the flows
+     * of a re-extracted module (the next answer walked a call chain instead of the route's flow until it ran); both run
+     * detached, so the commit returns at once, and only when a graph exists. [root] may be one service of a repository that holds several: the hook indexes [root], and the hooks
+     * directory is the nearest `.git` above it. One marker block per hook, replaced on reinstall, stripped on [remove].
+     */
+    fun gitHooks(root: Path, command: String = "jirrafe", remove: Boolean = false): List<Path> {
+        val hooksDir = gitDir(root)?.resolve("hooks") ?: return emptyList()
+        val dir = root.toAbsolutePath().normalize().toString().replace('\\', '/')
+        val block = "$HOOK_BEGIN\n[ -f \"$dir/.jirrafe/graph.db\" ] && (\"$command\" index --dir \"$dir\" >/dev/null 2>&1 </dev/null && \"$command\" knowledge --dir \"$dir\" >/dev/null 2>&1 </dev/null &)\n$HOOK_END\n"
+        val written = ArrayList<Path>()
+        for (name in listOf("post-commit", "post-checkout", "post-merge")) {
+            val file = hooksDir.resolve(name)
+            val existing = if (Files.exists(file)) Files.readString(file) else ""
+            val stripped = if (HOOK_BEGIN in existing && HOOK_END in existing)
+                existing.substring(0, existing.indexOf(HOOK_BEGIN)) + existing.substring(existing.indexOf(HOOK_END) + HOOK_END.length).trimStart('\n') else existing
+            val updated = if (remove) stripped else (if (stripped.isBlank()) "#!/bin/sh\n" else stripped.trimEnd() + "\n") + block
+            if (remove && updated.trim().let { it.isEmpty() || it == "#!/bin/sh" }) { Files.deleteIfExists(file); written.add(file); continue }
+            Files.createDirectories(hooksDir)
+            Files.writeString(file, updated)
+            runCatching { Files.setPosixFilePermissions(file, java.nio.file.attribute.PosixFilePermissions.fromString("rwxr-xr-x")) } // git on Windows ignores the bit
+            written.add(file)
+        }
+        return written
+    }
+
+    /** The `.git` directory for [root], walking up for a service inside a larger repository; a worktree's `.git` file is followed. */
+    private fun gitDir(root: Path): Path? {
+        var d: Path? = root.toAbsolutePath().normalize()
+        while (d != null) {
+            val g = d.resolve(".git")
+            if (Files.isDirectory(g)) return g
+            if (Files.isRegularFile(g)) return Files.readString(g).lineSequence().firstOrNull { it.startsWith("gitdir:") }?.substringAfter("gitdir:")?.trim()?.let { d.resolve(it).normalize() }
+            d = d.parent
+        }
+        return null
+    }
+
+    private const val HOOK_BEGIN = "# jirrafe:begin"
+    private const val HOOK_END = "# jirrafe:end"
+
     private fun section(file: Path, text: String): Path {
         val block = "$BEGIN\n$text$END\n"
         val existing = if (Files.exists(file)) Files.readString(file) else ""

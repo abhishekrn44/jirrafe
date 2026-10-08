@@ -92,7 +92,7 @@ asked they come first, body included.
 | `jirrafe init` | writes `jirrafe.toml` and ignores `.jirrafe/` |
 | `jirrafe build [--full]` | resolve the classpaths through the build plugin, index sources, bytecode and internal jars, compute the knowledge layer |
 | `jirrafe watch` | re-index incrementally on source changes |
-| `jirrafe install --client <name>` | register the skill or the MCP server for a client and write its instructions |
+| `jirrafe install --client <name> [--git-hooks]` | register the skill or the MCP server for a client and write its instructions; `--git-hooks` adds post-commit, post-checkout and post-merge hooks that re-index in the background, so an answer after a commit never starts from a stale graph (`--remove-git-hooks` strips them) |
 | `jirrafe serve [--transport stdio\|http]` | the MCP server |
 | `jirrafe query explain "<question>"` | flows, communities and nodes with citations, the leading method's body |
 | `jirrafe query search <name>` | nodes by name, signature, Javadoc or doc text |
