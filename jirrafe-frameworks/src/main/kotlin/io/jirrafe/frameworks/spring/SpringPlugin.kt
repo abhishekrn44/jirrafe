@@ -303,18 +303,24 @@ class SpringPlugin : FrameworkPlugin {
 
         /** The filter chain's rule for each route, as the route's signature: `hasRole(ADMIN)` on `POST /v1/user/approveRequest/{tempFk}`. */
         private fun access() {
-            val rules = ArrayList<Pair<String, String>>()
+            // pattern, rule, and where the pattern is written: a citation of the rule belongs on that line, not on the handler
+            val rules = ArrayList<Triple<String, String, Pair<String, Int>?>>()
             for (m in store.nodes(NodeKind.METHOD)) {
                 if (m.origin != Origin.REPO || m.signature?.contains("SecurityFilterChain") != true) continue
-                val text = runCatching { java.nio.file.Files.readAllLines(java.nio.file.Path.of(m.file!!)).subList((m.startLine ?: 1) - 1, m.endLine ?: 0).joinToString(" ") }.getOrNull() ?: continue
-                rules += RouteAccess.rules(text)
+                val start = m.startLine ?: 1
+                val lines = runCatching { java.nio.file.Files.readAllLines(java.nio.file.Path.of(m.file!!)).subList(start - 1, m.endLine ?: 0) }.getOrNull() ?: continue
+                for ((pattern, rule) in RouteAccess.rules(lines.joinToString(" "))) {
+                    val i = lines.indexOfFirst { "\"$pattern\"" in it }
+                    rules += Triple(pattern, rule, if (i >= 0) m.file!! to (start + i) else null)
+                }
             }
             if (rules.isEmpty()) return
             store.flush() // the routes are batched inserts until then, and a query would see none of them
             for (r in store.nodes(NodeKind.HTTP_ROUTE)) {
                 val path = r.attrs["path"] ?: continue
-                val rule = rules.firstOrNull { (pattern, _) -> RouteAccess.matches(pattern, path) }?.second ?: continue
-                store.node(r.copy(signature = rule), replace = true)
+                val (_, rule, at) = rules.firstOrNull { (pattern, _, _) -> RouteAccess.matches(pattern, path) } ?: continue
+                val attrs = if (at == null) r.attrs else r.attrs + mapOf("ruleFile" to at.first, "ruleLine" to at.second.toString())
+                store.node(r.copy(signature = rule, attrs = attrs), replace = true)
             }
         }
 

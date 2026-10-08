@@ -125,11 +125,22 @@ class Queries(
     /** Where an annotation sits: a declaration starts at its first annotation, which may be another one
      *  (`@Configuration` on line 21, `@EnableMethodSecurity` on 22), and a wrong line is a wrong claim. */
     private fun annotationAt(site: Node, declares: String): String? {
-        val name = declares.takeIf { it.startsWith("@") }?.drop(1)?.takeWhile { it.isLetterOrDigit() || it == '_' } ?: return at(site)
+        // a route's access rule is written in the security config, not on the handler
+        if (site.kind == NodeKind.HTTP_ROUTE) site.attrs["ruleFile"]?.let { f -> site.attrs["ruleLine"]?.let { return "${relative(f)}:$it" } }
+        val name = declares.takeIf { it.startsWith("@") }?.drop(1)?.takeWhile { it.isLetterOrDigit() || it == '_' } ?: return declarationAt(site)
         val start = site.startLine ?: return at(site)
         val lines = sources?.read(site, 0)?.text?.lines() ?: return at(site)
         val i = lines.indexOfFirst { it.trimStart().startsWith("@$name") && !it.trimStart().drop(name.length + 1).firstOrNull().let { c -> c != null && (c.isLetterOrDigit() || c == '_') } }
         return if (i < 0) at(site) else "${relative(site.file ?: return at(site))}:${start + i}"
+    }
+
+    /** A type is cited at its `class`/`interface` line: its node starts at the first annotation (`@Component` on 23, the class on 24). */
+    private fun declarationAt(n: Node): String? {
+        if (n.kind !in CODE) return at(n)
+        val simple = n.id.substringAfterLast('.').substringAfterLast('$')
+        val lines = sources?.read(n, 0)?.text?.lines() ?: return at(n)
+        val i = lines.indexOfFirst { Regex("""\b(class|interface|enum|record)\s+""" + Regex.escape(simple) + """\b""").containsMatchIn(it) }
+        return if (i < 0) at(n) else "${relative(n.file ?: return at(n))}:${(n.startLine ?: return at(n)) + i}"
     }
 
     private fun at(n: Node): String? = n.file?.let { f ->
@@ -1311,7 +1322,7 @@ class Queries(
                     })
                 })
                 if (l >= 5 && data.isNotEmpty()) put("data", buildJsonArray {
-                    for ((c, fields) in data) add(buildJsonObject { put("id", c.id); at(c)?.let { put("at", it) }; c.attrs["table"]?.let { put("table", it) }; put("fields", fields.joinToString(", ")) })
+                    for ((c, fields) in data) add(buildJsonObject { put("id", c.id); (if (c.attrs["table"] != null) annotationAt(c, "@Table") else declarationAt(c))?.let { put("at", it) }; c.attrs["table"]?.let { put("table", it) }; put("fields", fields.joinToString(", ")) })
                 })
                 if (l >= 5 && configKeys.isNotEmpty()) put("config", buildJsonArray {
                     for (k in configKeys) add(buildJsonObject { put("key", k.fqn); k.attrs["value"]?.let { put("value", it) }; at(k)?.let { put("at", it) } })
