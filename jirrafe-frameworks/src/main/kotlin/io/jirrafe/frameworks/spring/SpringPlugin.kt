@@ -79,9 +79,16 @@ class SpringPlugin : FrameworkPlugin {
             return m.groupValues[1] to (m.groupValues[2].isNotEmpty())
         }
 
+        /**
+         * `${spring.kafka.custom.job-topic}` through the config to its value, and a value that is itself an environment
+         * placeholder to its default: `${KAFKA_JOB_TOPIC:job-events}` is the topic `job-events` on every machine that
+         * does not set the variable, and one service writing the literal `job-events` names the same topic. Before,
+         * the two were two topic nodes and the consumer of one never met the producer of the other.
+         */
         private fun resolve(text: String): String {
             val (key, _) = placeholder(text) ?: return text
-            return config[key]?.value ?: text
+            val value = config[key]?.value ?: return text
+            return value.replace(PLACEHOLDER) { m -> m.groupValues[2].drop(1).ifEmpty { m.value } }
         }
 
         private fun bindConfig(from: String, text: String) {
@@ -408,11 +415,24 @@ class SpringPlugin : FrameworkPlugin {
 
         private fun producers() {
             for (m in store.nodes(NodeKind.METHOD)) {
+                if (m.attrs["test"] == "true") continue // a test's `send("track-123", ..)` is not a topic the application has
                 val templates = store.edgesFrom(m.id, EdgeKind.CALLS).map { it.to }.mapNotNull { target ->
                     PRODUCERS.entries.firstOrNull { (prefix, _) -> target.startsWith(prefix) }?.value
                 }
                 if (templates.isEmpty()) continue
-                val candidates = Attrs.strings(m).filter { TOPIC_NAME.matches(it) }.toSet().ifEmpty { topicGetters(m) }
+                // the topic is most often a @Value field read on the line of the send: `kafkaTemplate.send(applicationTopic, ..)`
+                // with `@Value("${spring.kafka.custom.application-topic}") String applicationTopic`. Resolved like a listener's
+                // topic, so the producer and the consumer meet on one node. A string literal is the fallback, and never one
+                // that is an annotation value: `@NewSpan("send-job-request")` on the sender was taken for the topic name
+                // every @Value field the method reads: createJob sends on lines 54 and 62 and the graph keeps one CALLS edge per
+                // callee, so a send line cannot tell the two apart. A @Value read that is not a topic (a region, a name) in a
+                // method that sends would add a phantom topic; a known topic among the candidates takes precedence below
+                val valueFields = store.edgesFrom(m.id, EdgeKind.READS_FIELD)
+                    .mapNotNull { e -> store.node(e.to)?.let { annotationsOf(it)[VALUE]?.get("value") } }
+                    .onEach { bindConfig(m.id.substringBefore('#'), it) }
+                    .map { resolve(it) }.filter { it.isNotEmpty() }.toSet()
+                val annotationValues = annotationsOf(m).values.flatMap { it.values }.toSet()
+                val candidates = valueFields.ifEmpty { Attrs.strings(m).filter { TOPIC_NAME.matches(it) && it !in annotationValues }.toSet() }.ifEmpty { topicGetters(m) }
                 val chosen = candidates.filter { it in knownTopics }.ifEmpty { candidates }
                 for (name in chosen) {
                     store.edge(Edge(m.id, topic(name, templates.first(), m), EdgeKind.PRODUCES_TO, Resolution.HEURISTIC, 1.0 / chosen.size))
