@@ -143,6 +143,29 @@ class Queries(
         return if (i < 0) at(n) else "${relative(n.file ?: return at(n))}:${(n.startLine ?: return at(n)) + i}"
     }
 
+    /**
+     * The call to [callee] in a handler and the responses it decides, as one line: the call, then each status or throw in the
+     * next lines with the message line before it. `UserDto user = userService.createNewUser(userDto); ... "User Already Exists"
+     * ... HttpStatus.BAD_REQUEST`. Null when the handler has no call to it or decides nothing there.
+     */
+    private fun handlerOutcome(handler: Node, callee: String): Pair<String, String>? {
+        val src = sources?.read(handler, 0) ?: return null
+        val ls = src.text.lines()
+        // `.createNewUser(`: the call, not the handler's own declaration when the two share a name
+        val i = ls.indexOfFirst { ".$callee(" in it }.takeIf { it >= 0 } ?: return null
+        val picked = LinkedHashSet<Int>()
+        for (j in i + 1..minOf(i + 12, ls.lastIndex)) {
+            val t = ls[j]
+            if ("HttpStatus." in t || "throw " in t || ".status(" in t) {
+                if (j - 1 > i && '"' in ls[j - 1] && "HttpStatus." !in ls[j - 1]) picked += j - 1
+                picked += j
+            }
+        }
+        if (picked.isEmpty()) return null
+        val text = (listOf(ls[i].trim()) + picked.map { ls[it].trim() }).joinToString(" ... ").take(400)
+        return text to "${relative(src.file)}:${src.startLine + i}"
+    }
+
     private fun at(n: Node): String? = n.file?.let { f ->
         val rel = relative(f)
         n.startLine?.let { "$rel:$it" } ?: rel
@@ -1107,6 +1130,14 @@ class Queries(
                         .let { tail -> val k = tail.indexOfFirst { l -> l.startsWith("throw ") || l.startsWith("return ") || "ResponseEntity" in l || "Status" in l }; if (k >= 0) tail.take(k + 1) else emptyList() }
                     callerFacts += "${simpleName(owner(c))}.${simpleName(c)} calls ${simpleName(t)}:  " + (listOf(ls[i].trim()) + guarded).joinToString(" ") to "${relative(src.file)}:${src.startLine + i}"
                 }
+            }
+            // what the endpoint does with that caller's result: createNewUser returns null for a taken name, and the
+            // 400 "User Already Exists" is in AuthController, one hop up, where no answer built on the payload found it
+            if (store.node(owner(c))?.attrs?.get("layer") != "controller") for (h in cleanEdges(c, store.edgesTo(c)) { it.from }.map { it.from }.distinct()
+                    .filter { it !in packed && store.node(owner(it))?.attrs?.get("layer") == "controller" }.take(2)) {
+                if (callerFacts.size >= FACTS) break
+                val handler = store.node(h) ?: continue
+                handlerOutcome(handler, simpleName(c))?.let { callerFacts += "${simpleName(owner(h))}.${simpleName(h)} answers with:  ${it.first}" to it.second }
             }
         }
         // what the chain sets that nothing reads: a setter called here whose getter has no caller outside generated code
