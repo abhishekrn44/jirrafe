@@ -1129,6 +1129,32 @@ class Queries(
                 unguarded += "${simpleName(owner(e.from))}.${simpleName(e.from)} saves through ${simpleName(repo)} and does not call ${simpleName(g)}:  ${ls[i].trim()}" to "${relative(src.file)}:${src.startLine + i}"
             }
         }
+        // A bean and a shown class that builds its own instance of the same type. The answer credited ApiSecurityConfig's
+        // passwordEncoder bean with hashing UserServiceImpl does with `new Argon2PasswordEncoder(...)` in a field, with both
+        // on the page and the field fourth in a long `fields:` line. One line says which instance the shown code uses, and
+        // whether anything in the repo injects the bean at all.
+        val ownInstances = ArrayList<Pair<String, String>>()
+        for (bm in (packAll.map { it.id } + wiringBodies).distinct()) {
+            if (ownInstances.size >= 2) break
+            val bean = store.edgesFrom(bm, EdgeKind.PROVIDES_BEAN).firstOrNull()?.to?.let { store.node(it) } ?: continue
+            val m = store.node(bm) ?: continue
+            val type = sources?.read(m, 0)?.text?.let { Regex("""new\s+([A-Z]\w*)\s*[(<]""").find(it)?.groupValues?.get(1) } ?: continue
+            val own = spineOwners.flatMap { o -> store.edgesFrom(o, EdgeKind.CONTAINS).mapNotNull { store.node(it.to) } }
+                .filter { f -> f.kind == NodeKind.FIELD && f.signature.orEmpty().substringAfter(": ", "").substringAfterLast('.') == type }
+                .mapNotNull { f -> sources?.read(f, 0)?.let { src ->
+                    val ls = src.text.lines(); val i = ls.indexOfFirst { "new $type" in it }
+                    if (i < 0) null else {
+                        // the declaration to its semicolon, at most three lines: the constructor arguments are the configuration
+                        val end = (i until minOf(i + 3, ls.size)).firstOrNull { ls[it].trimEnd().endsWith(";") } ?: i
+                        f to ((i..end).joinToString(" ") { ls[it].trim() } to "${relative(src.file)}:${src.startLine + i}")
+                    } } }
+            if (own.isEmpty()) continue
+            val injected = store.edgesTo(bean.id, EdgeKind.INJECTS).isNotEmpty()
+            val (decl, loc) = own.first().second
+            ownInstances += own.joinToString(" and ") { "${simpleName(owner(it.first.id))}.${it.first.id.substringAfterLast('#')}" } +
+                (if (own.size > 1) " are their own " else " is its own ") + "$type, not the ${bean.fqn} bean (${simpleName(owner(bm))}.${simpleName(bm)} @ ${at(m) ?: "?"})" +
+                (if (injected) "" else "; no class in the repo injects that bean") + ":  $decl" to loc
+        }
         val deadEnds = ArrayList<Pair<String, String>>()
         for (b in packAll) for (e in store.edgesFrom(b.id, EdgeKind.CALLS)) {
             val name = simpleName(e.to); if (!name.startsWith("set") || name.length < 4 || store.node(owner(e.to))?.attrs?.get("layer") != "model") continue
@@ -1163,6 +1189,7 @@ class Queries(
             }
         facts += deadEnds.sortedByDescending { d -> stems.count { st -> d.first.substringBefore(" is set").lowercase().contains(st.lowercase().take(5)) } }.take(2)
         facts += unguarded
+        facts += ownInstances
         facts += constraints
         facts += callerFacts
         facts += readerFacts
