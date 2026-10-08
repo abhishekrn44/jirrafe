@@ -16,7 +16,8 @@ import kotlin.test.assertTrue
 class QueriesTest {
     private val store = SyntheticGraph.build()
     private val reader = object : SourceReader {
-        override fun read(node: Node, contextLines: Int) = SourceReader.Source(node.file!!, node.startLine ?: 1, "// source of ${node.id}", decompiled = false)
+        override fun read(node: Node, contextLines: Int) = SourceReader.Source(node.file!!, node.startLine ?: 1,
+            if (node.id == "a.OrderService#notify()") "private void notify() {\n    ctx.put(\"channel\", id);\n}" else "// source of ${node.id}", decompiled = false)
     }
     private val q = Queries(store, "/repo", null, reader)
     private val char34 = '"'.toString()
@@ -228,6 +229,7 @@ class QueriesTest {
         val opened = Render.explain(q.explain("how are orders opened"))
         assertContains(opened, "MAX_OPEN is never read")
         assertContains(opened, "OrderService.export has no callers, nor does ReportApi.export which it implements")
+        assertContains(opened, "OrderService.notify writes the key \"channel\" and no other indexed method mentions it:  ctx.put(\"channel\", id);")
         val legacy = Render.explain(q.explain("how does the legacy export run"))
         assertContains(legacy, "LegacyExport is referenced by no indexed code outside its tests")
         assertContains(legacy, "LegacyRow is referenced only by LegacyExport")

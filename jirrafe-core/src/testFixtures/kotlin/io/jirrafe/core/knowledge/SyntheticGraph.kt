@@ -42,6 +42,13 @@ object SyntheticGraph {
         cls("a.OrderServiceTest", test = true)
         cls("a.Main")
         method("a.OrderController#list()"); method("a.OrderService#open()", doc = "Open orders"); method("a.OrderService#unused()", "private void unused()")
+        // notify() writes a map entry under a literal key nothing else in the graph mentions
+        store.node(Node("a.OrderService#notify()", NodeKind.METHOD, "a.OrderService#notify()", Origin.REPO, signature = "private void notify", module = "app", file = "src/a/OrderService.java", startLine = 22, endLine = 24,
+            attrs = mapOf(Attrs.STRINGS to Attrs.encodeStrings(listOf("channel", "Opening orders"))!!)))
+        store.edge(Edge("a.OrderService", "a.OrderService#notify()", EdgeKind.CONTAINS, Resolution.EXACT))
+        store.node(Node("java.util.Map#put(java.lang.Object,java.lang.Object)", NodeKind.METHOD, "put", Origin.EXTERNAL))
+        calls("a.OrderService#notify()", "java.util.Map#put(java.lang.Object,java.lang.Object)")
+        calls("a.OrderService#open()", "a.OrderService#notify()")
         // implements an interface outside the graph: its public methods are a contract the framework calls, so `rollback()` has no caller and is not dead
         store.node(Node("a.JdbcConn", NodeKind.CLASS, "a.JdbcConn", Origin.REPO, signature = "public class JdbcConn implements Connection", module = "app", file = "src/a/JdbcConn.java", startLine = 1, endLine = 50))
         store.edge(Edge("a", "a.JdbcConn", EdgeKind.CONTAINS, Resolution.EXACT))

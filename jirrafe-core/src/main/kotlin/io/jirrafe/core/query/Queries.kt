@@ -85,7 +85,7 @@ class Queries(
         private const val WIRING_SITES = 12
         private const val WIRING_BODIES = 3 // the framework bodies that answer a question the call chain cannot
         /** What a framework calls on a registered component instead of the code calling it. */
-        private val FILTER_METHODS = setOf("doFilterInternal", "doFilter", "preHandle", "loadUserByUsername", "parse", "print", "convert")
+        private val FILTER_METHODS = setOf("doFilterInternal", "doFilter", "preHandle", "loadUserByUsername", "parse", "print", "convert", "commence", "handle")
         private const val FIELDS_MAX = 12
         private const val WHOLE_FILE_TOKENS = 700L // a file this size costs less whole than the same facts as fragments
         private const val CARD_MEMBERS = 30
@@ -1315,6 +1315,21 @@ class Queries(
                 Triple(f.fqn + (decl?.let { ":  $it" } ?: ""), at(n) ?: return@mapNotNull null, rank)
             }.sortedByDescending { it.third }
         facts += absences.filter { it.third >= 1 }.take(3).map { it.first to it.second }
+        // A key written and read by nothing: a claim, header, attribute or map entry a packed class writes under a
+        // literal name that no other indexed method mentions. generateToken puts the role into the token as "role", and
+        // no method reads a claim by that name: the authorities come from the database on every request, and the
+        // answer said the claim was checked. Identifier-shaped literals only: a message has spaces, a path a slash
+        val keyWriters = setOf("claim", "put", "putIfAbsent", "setAttribute", "setHeader", "addHeader", "setProperty")
+        val keyShape = Regex("[A-Za-z_][A-Za-z0-9_.-]{1,40}")
+        val repoMethods by lazy { (store.nodes(NodeKind.METHOD) + store.nodes(NodeKind.CONSTRUCTOR)).filter { it.origin == Origin.REPO && it.attrs["test"] != "true" }.map { it.id to Attrs.strings(it) } }
+        // and only where the question reaches: the method, its class or the key carries a question word, so the token's
+        // claim is a fact for "how is the JWT validated" and not for "is the username taken", where the same class is packed
+        val asksAbout = { m: Node, key: String -> stems.any { st -> val w = st.lowercase().take(5); w.length >= 3 && (simpleName(m.id).lowercase().contains(w) || simpleName(owner(m.id)).lowercase().contains(w) || key.lowercase().contains(w)) } }
+        val unreadKeys = scopeOwners.flatMap { c -> store.edgesFrom(c, EdgeKind.CONTAINS).map { it.to } }.distinct().mapNotNull { store.node(it) }
+            .filter { m -> m.kind == NodeKind.METHOD && store.edgesFrom(m.id, EdgeKind.CALLS).any { simpleName(it.to) in keyWriters } }
+            .flatMap { m -> Attrs.strings(m).distinct().filter { keyShape.matches(it) }.filter { key -> asksAbout(m, key) && repoMethods.none { (id, strs) -> id != m.id && key in strs } }.map { key -> m to key } }
+            .take(2).mapNotNull { (m, key) -> lineOf(m, "\"$key\"")?.let { (t, at) -> "${simpleName(owner(m.id))}.${simpleName(m.id)} writes the key \"$key\" and no other indexed method mentions it:  $t" to at } }
+        facts += unreadKeys
         facts += unguarded
         facts += ownInstances
         // a unique column only when the question names it: the username constraint answers "is the name taken", and on
@@ -1343,6 +1358,9 @@ class Queries(
                 if (!("addFilter" in t || "sessionCreationPolicy" in t || "exceptionHandling" in t || rule)) { i++; continue }
                 var j = i + 1
                 if (rule) while (j < ls.size && isRule(ls[j]) && (routePaths.isEmpty() || coversRoute(ls[j]))) j++
+                // the exception handling is one statement over several lines, and the access-denied lambda that sets 403
+                // is on the lines after the one that names the entry point: the statement runs to its closing parenthesis
+                else if ("exceptionHandling" in t) { var depth = 0; j = i; while (j < ls.size && j < i + 6) { depth += ls[j].count { it == '(' } - ls[j].count { it == ')' }; j++; if (depth <= 0) break } }
                 facts += "${simpleName(owner(w))}.${simpleName(w)}:  " + (i until j).joinToString(" ") { ls[it].trim() } to "${relative(src.file)}:${src.startLine + i}"
                 i = j
             }
