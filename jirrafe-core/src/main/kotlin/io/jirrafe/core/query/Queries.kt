@@ -981,7 +981,11 @@ class Queries(
             val site = packedOwners.firstOrNull { o -> hits.any { h -> h != o && store.edgesFrom(h).any { it.to == o } } }?.let { store.node(it) } ?: store.node(hits.first()) ?: continue
             wiring += site to "ServiceLoader registers ${hits.size} as ${iface.substringAfterLast('.')} in $file: " + hits.joinToString(", ") { it.substringAfterLast('.') }
         }
-        val wiringSites = wiring.distinctBy { it.first.id }.sortedBy { it.first.file + ":" + it.first.startLine }.take(WIRING_SITES)
+        // the access rule on each packed handler's own route, first: "is approveRequest admin-only" is one of these lines,
+        // and it was never in this list (a route node is not an annotation site), only in other matches when it ranked
+        val spineRoutes = spine.flatMap { h -> store.edgesFrom(h, EdgeKind.HANDLES_ROUTE).mapNotNull { e -> store.node(e.to)?.let { r -> r to (r.signature ?: "route") } } }
+        val wiringSites = (spineRoutes + wiring).distinctBy { it.first.id }
+            .sortedWith(compareBy({ if (it.first.kind == NodeKind.HTTP_ROUTE || it.first.id in spineIds) 0 else 1 }, { it.first.file + ":" + it.first.startLine })).take(WIRING_SITES)
         // Where the answer lives decides what to send. Nine questions in ten are answered inside one or two files.
         // A small file read whole is cheaper than the same facts cut into fragments, and it reads in the order it
         // was written; a large one never is. So: the whole file when it is small, its card when it is not, and the
@@ -1218,15 +1222,17 @@ class Queries(
                 if (l >= 5 && configKeys.isNotEmpty()) put("config", buildJsonArray {
                     for (k in configKeys) add(buildJsonObject { put("key", k.fqn); k.attrs["value"]?.let { put("value", it) }; at(k)?.let { put("at", it) } })
                 })
-                // complete for the annotations named: the graph knows every site, which is what lets an agent stop looking
-                if (l >= 5 && wiringSites.isNotEmpty()) put("wiring", buildJsonArray {
+                // complete for the annotations named: the graph knows every site, which is what lets an agent stop looking.
+                // One level earlier than data and config: it is four lines, and the two-step question lands at level 4 at the
+                // default budget, where "is approveRequest admin-only" was answered "not shown" with the rule cut
+                if (l >= 4 && wiringSites.isNotEmpty()) put("wiring", buildJsonArray {
                     for ((site, text) in wiringSites.cap(maxOf(4, l))) add(buildJsonObject { put("id", site.id); annotationAt(site, text)?.let { put("at", it) }; put("declares", text) })
                 })
                 if (l >= 5 && dependencies.isNotEmpty()) put("dependencies", buildJsonArray { for (d in dependencies) add(JsonPrimitive(d)) })
                 // what the budget cut, by name: a section that vanishes without a word reads as "there is none", and the
                 // model then writes "not shown" or a framework default where one more call would have answered
                 if (l < 5) {
-                    val cut = listOfNotNull("data".takeIf { data.isNotEmpty() }, "config".takeIf { configKeys.isNotEmpty() }, "wiring".takeIf { wiringSites.isNotEmpty() },
+                    val cut = listOfNotNull("data".takeIf { data.isNotEmpty() }, "config".takeIf { configKeys.isNotEmpty() }, "wiring".takeIf { l < 4 && wiringSites.isNotEmpty() },
                         "dependencies".takeIf { dependencies.isNotEmpty() }, "facts (${minOf(facts.size, FACTS) - 3} more)".takeIf { facts.size > 3 })
                     if (cut.isNotEmpty()) put("omitted", buildJsonArray { for (c in cut) add(JsonPrimitive(c)) })
                 }
