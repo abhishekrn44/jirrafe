@@ -19,6 +19,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.put
 
 /**
@@ -903,6 +904,7 @@ class Queries(
         // by reading files. Follow it here instead: the same shape, derived on the spot from the best match.
         val chainSteps = if (rankedFlows.isEmpty()) chain(lead) else emptyList()
         val bestFlowSteps = flowSteps
+        val flowDepth = topFlow?.attrs?.get("steps")?.let { st -> json.parseToJsonElement(st).jsonArray.associate { s -> s.jsonObject["id"]!!.jsonPrimitive.content to (s.jsonObject["depth"]?.jsonPrimitive?.intOrNull ?: 0) } }.orEmpty()
         // a walk carries logic, not a DTO's getters or a generated builder: their shape is in `data`
         val named = { id: String -> stems.any { s -> simpleName(id).lowercase().contains(s.lowercase()) } }
         fun packable(id: String) = store.node(id)?.let { it.origin != Origin.EXTERNAL && it.file != null && it.attrs["generated"] != "true" && (layerRank(id) < 2 || named(id)) } == true
@@ -928,7 +930,13 @@ class Queries(
             // the precomputed flow already resolved dispatch and ordered the walk: the entry, then the flow from the match on
             // (a stable sort by layer, so the service and repository steps come before the helpers the walk met first)
             in bestFlowSteps -> {
-                val rest = bestFlowSteps.drop(bestFlowSteps.indexOf(from))
+                // the lead, what follows it, then the same-depth siblings listed before it: steps of one depth are stored
+                // in discovery order, and a lead that happens to be last among its siblings ("stored" led with
+                // AudioStorageService#uploadAudio, listed after the feign client and the producer it is called beside)
+                // walked to a two-file spine and the answer got a whole file and a card instead of the four bodies.
+                // Siblings go last so the lead's own callees keep their slots (existsByUsername's implementation)
+                val at = bestFlowSteps.indexOf(from)
+                val rest = bestFlowSteps.drop(at) + bestFlowSteps.take(at).filter { flowDepth[it] == flowDepth[from] }
                 val reps = legReps(rest).filter { it != from }
                 val ordered = (listOf(bestFlowSteps.first()) + rest.sortedBy { layerRank(it) }).distinct()
                     // trivial steps stay in the walk and are dropped at pack time: they keep the first walk from spending every
