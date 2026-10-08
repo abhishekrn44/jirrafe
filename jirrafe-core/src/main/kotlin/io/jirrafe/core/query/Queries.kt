@@ -1385,7 +1385,7 @@ class Queries(
                     })
                 })
                 if (l >= 5 && data.isNotEmpty()) put("data", buildJsonArray {
-                    for ((c, fields) in data) add(buildJsonObject { put("id", c.id); (if (c.attrs["table"] != null) annotationAt(c, "@Table") else declarationAt(c))?.let { put("at", it) }; c.attrs["table"]?.let { put("table", it) }; put("fields", fields.joinToString(", ")) })
+                    for ((c, fields) in data) add(buildJsonObject { put("id", c.id); (if (c.attrs["table"] != null) annotationAt(c, when (c.attrs["store"]?.substringBefore(' ')) { null -> "@Table"; "redis" -> "@RedisHash"; else -> "@Document" }) else declarationAt(c))?.let { put("at", it) }; c.attrs["table"]?.let { put("table", it) }; c.attrs["store"]?.let { put("store", it) }; put("fields", fields.joinToString(", ")) })
                 })
                 if (l >= 5 && configKeys.isNotEmpty()) put("config", buildJsonArray {
                     for (k in configKeys) add(buildJsonObject { put("key", k.fqn); k.attrs["value"]?.let { put("value", it) }; at(k)?.let { put("at", it) } })

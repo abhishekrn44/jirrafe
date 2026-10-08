@@ -360,15 +360,28 @@ class SpringPlugin : FrameworkPlugin {
             return seen.toList()
         }
 
-        // ---- JPA -------------------------------------------------------------------------------
+        // ---- JPA and the other Spring Data stores ------------------------------------------------
 
+        /**
+         * What the class's rows are called in its store: `@Table(name)` or the class name for a JPA entity, the
+         * `@Document(collection)` of a Mongo document (the decapitalised class name when unset, Spring's default), the
+         * `@RedisHash` of a Redis hash. One `table` attribute for all of them, since an answer needs the same fact
+         * from each, and `store` names the kind, so the data line says "mongo collection Application" and the citation
+         * lands on that annotation's line rather than the class declaration. Before, a Mongo entity was listed with
+         * its fields and nothing said what it was, and no answer about swa-proj3 called Application a document.
+         */
         private fun jpa() {
             for (cls in classes.values) {
                 val ann = annotationsOf(cls)
-                val entity = ann.keys.firstOrNull { it.endsWith(".persistence.Entity") } ?: continue
-                val table = ann.keys.firstOrNull { it.endsWith(".persistence.Table") }?.let { ann[it]?.get("name") }
-                    ?: cls.id.substringAfterLast('.').substringAfterLast('$')
-                store.node(cls.copy(attrs = cls.attrs + ("table" to table)), replace = true)
+                val simple = cls.id.substringAfterLast('.').substringAfterLast('$')
+                val (table, kind) = when {
+                    ann.keys.any { it.endsWith(".persistence.Entity") } ->
+                        (ann.keys.firstOrNull { it.endsWith(".persistence.Table") }?.let { ann[it]?.get("name") } ?: simple) to null
+                    MONGO_DOCUMENT in ann -> (ann[MONGO_DOCUMENT]?.get("collection") ?: ann[MONGO_DOCUMENT]?.get("value") ?: simple.replaceFirstChar { it.lowercase() }) to "mongo collection"
+                    REDIS_HASH in ann -> (ann[REDIS_HASH]?.get("value") ?: simple) to "redis hash"
+                    else -> continue
+                }
+                store.node(cls.copy(attrs = cls.attrs + ("table" to table) + (kind?.let { mapOf("store" to it) } ?: emptyMap())), replace = true)
             }
             for (cls in classes.values) {
                 if (cls.kind != NodeKind.INTERFACE || !isSpringDataRepository(cls.id)) continue
@@ -589,6 +602,8 @@ class SpringPlugin : FrameworkPlugin {
         const val QUALIFIER = "org.springframework.beans.factory.annotation.Qualifier"
         const val VALUE = "org.springframework.beans.factory.annotation.Value"
         const val RESOURCE = "jakarta.annotation.Resource"
+        const val MONGO_DOCUMENT = "org.springframework.data.mongodb.core.mapping.Document"
+        const val REDIS_HASH = "org.springframework.data.redis.core.RedisHash"
         const val SCHEDULED = "org.springframework.scheduling.annotation.Scheduled"
         const val FEIGN_CLIENT = "org.springframework.cloud.openfeign.FeignClient"
         const val CONFIGURATION_PROPERTIES = "org.springframework.boot.context.properties.ConfigurationProperties"

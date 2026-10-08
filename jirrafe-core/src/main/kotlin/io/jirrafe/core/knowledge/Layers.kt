@@ -34,7 +34,7 @@ internal object Layers {
             "org.springframework.context.annotation.Configuration", "org.springframework.boot.context.properties.ConfigurationProperties",
             "org.springframework.boot.autoconfigure.SpringBootApplication",
         ),
-        "model" to setOf("jakarta.persistence.Entity", "javax.persistence.Entity", "jakarta.persistence.Embeddable", "org.springframework.data.mongodb.core.mapping.Document"),
+        "model" to setOf("jakarta.persistence.Entity", "javax.persistence.Entity", "jakarta.persistence.Embeddable", "org.springframework.data.mongodb.core.mapping.Document", "org.springframework.data.redis.core.RedisHash"),
         "service" to setOf("org.springframework.stereotype.Service"),
     )
     private const val COMPONENT = "org.springframework.stereotype.Component"

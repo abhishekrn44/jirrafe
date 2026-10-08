@@ -116,6 +116,17 @@ class SpringPluginTest {
     }
 
     @Test
+    fun mongoDocumentsAndRedisHashesNameTheirStore() {
+        val shipment = assertNotNull(store.node("com.example.orders.Shipment"))
+        assertEquals("shipments", shipment.attrs["table"])
+        assertEquals("mongo collection", shipment.attrs["store"])
+        val cache = assertNotNull(store.node("com.example.orders.ShipmentCache"))
+        assertEquals("ShipmentCache", cache.attrs["table"])
+        assertEquals("redis hash", cache.attrs["store"])
+        assertEquals(null, store.node("com.example.orders.Order")?.attrs?.get("store"), "a JPA entity keeps the plain table")
+    }
+
+    @Test
     fun jpaMessagingRemoteAndJobs() {
         assertEquals("orders", store.node("com.example.orders.Order")?.attrs?.get("table"))
         assertEquals(setOf("com.example.orders.Order"), targets("com.example.orders.OrderRepository", EdgeKind.MAPS_TO_TABLE))

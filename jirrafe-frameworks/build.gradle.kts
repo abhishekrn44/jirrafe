@@ -13,6 +13,8 @@ dependencies {
     testRuntimeOnly("jakarta.servlet:jakarta.servlet-api")
     testRuntimeOnly("org.springframework:spring-tx")
     testRuntimeOnly("org.springframework.data:spring-data-jpa")
+    testRuntimeOnly("org.springframework.data:spring-data-mongodb")
+    testRuntimeOnly("org.springframework.data:spring-data-redis")
     testRuntimeOnly("org.springframework.kafka:spring-kafka")
     testRuntimeOnly("jakarta.persistence:jakarta.persistence-api")
     testImplementation(kotlin("test"))
