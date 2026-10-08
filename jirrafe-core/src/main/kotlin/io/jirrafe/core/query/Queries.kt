@@ -1117,11 +1117,24 @@ class Queries(
         // (the filter is a field with its own name, so the lines are picked by what they declare, not by a class name)
         val routePaths = packAll.flatMap { b -> store.edgesFrom(b.id, EdgeKind.HANDLES_ROUTE).mapNotNull { store.node(it.to)?.fqn?.substringAfter(' ') } }
         val coversRoute = { t: String -> Regex("\"([^\"]+)\"").findAll(t).any { m -> val pat = m.groupValues[1].removeSuffix("/**").removeSuffix("/*"); routePaths.any { r -> r.startsWith(pat) } } }
+        // The access rules: the ones that cover a packed handler's route, or all of them when nothing packed has a
+        // route (the filter and the token provider: "how is the token validated" is answered by what the rules then
+        // decide, and the answer said "not shown" for lines 43-47 with lines 50-55 in hand). Consecutive rule lines
+        // are one statement and one fact, so the block does not spend five of the eight slots.
+        val isRule = { t: String -> "requestMatchers" in t || "antMatchers" in t || "anyRequest" in t }
         for (w in wiringBodies.distinct().filter { it !in packed }) {
             val m = store.node(w) ?: continue
             val src = sources?.read(m, 0) ?: continue
-            for ((i, t) in src.text.lines().withIndex()) if ("addFilter" in t || "sessionCreationPolicy" in t || "exceptionHandling" in t || (("requestMatchers" in t || "antMatchers" in t) && coversRoute(t))) {
-                facts += "${simpleName(owner(w))}.${simpleName(w)}:  ${t.trim()}" to "${relative(src.file)}:${src.startLine + i}"; if (facts.size >= FACTS) break
+            val ls = src.text.lines()
+            var i = 0
+            while (i < ls.size && facts.size < FACTS) {
+                val t = ls[i]
+                val rule = isRule(t) && (routePaths.isEmpty() || coversRoute(t))
+                if (!("addFilter" in t || "sessionCreationPolicy" in t || "exceptionHandling" in t || rule)) { i++; continue }
+                var j = i + 1
+                if (rule) while (j < ls.size && isRule(ls[j]) && (routePaths.isEmpty() || coversRoute(ls[j]))) j++
+                facts += "${simpleName(owner(w))}.${simpleName(w)}:  " + (i until j).joinToString(" ") { ls[it].trim() } to "${relative(src.file)}:${src.startLine + i}"
+                i = j
             }
         }
 
