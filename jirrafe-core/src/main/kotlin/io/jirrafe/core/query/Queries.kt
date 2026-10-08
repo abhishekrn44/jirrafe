@@ -1230,6 +1230,11 @@ class Queries(
                         "dependencies".takeIf { dependencies.isNotEmpty() }, "facts (${minOf(facts.size, FACTS) - 3} more)".takeIf { facts.size > 3 })
                     if (cut.isNotEmpty()) put("omitted", buildJsonArray { for (c in cut) add(JsonPrimitive(c)) })
                 }
+                // a module whose source tier failed is in the graph from bytecode: decompiled bodies, no call lines, no Javadoc.
+                // An answer built on such bodies says so, instead of reading as complete
+                val degraded = packAll.mapNotNull { store.node(owner(it.id))?.module }.distinct()
+                    .mapNotNull { m -> store.meta("health:$m")?.takeIf { it != "source" }?.let { "$m: $it" } }
+                if (degraded.isNotEmpty()) put("degraded", buildJsonArray { for (d in degraded) add(JsonPrimitive(d)) })
                 // a thin answer says which of the code's own words are near the question, so the next ask lands
                 if (pack.isEmpty() || hits.size < 3) nearbyVocabulary(words + stems).takeIf { it.isNotEmpty() }?.let { v -> put("vocabulary", buildJsonArray { for (t in v) add(JsonPrimitive(t)) }) }
                 // the other matches: with bodies packed, a few names and lines for the agent to choose to follow; the

@@ -112,6 +112,7 @@ class Indexer(
                 )
                 // a processor built for a newer JDK than the one running jirrafe (Error Prone on Spring Framework) kills
                 // javac in-process; retry without processors, and never let one module's source tier abort the index
+                var health = "source" // what the query side may say about this module's bodies and edges
                 val r = try {
                     source.extract(files, options(processors.map(Path::of)))
                 } catch (e: Throwable) {
@@ -120,11 +121,14 @@ class Indexer(
                         source.extract(files, options(emptyList()))
                     } catch (e2: Throwable) {
                         log("  source tier of ${m.name} skipped: ${e2.message?.lineSequence()?.first()}; bytecode only")
+                        health = "bytecode only: " + (e2.message?.lineSequence()?.first() ?: e2.javaClass.simpleName).take(120)
                         SourceExtractor.Result(0, 0, listOf(e2.toString()))
                     }
                 }
                 sourceFiles += r.files
                 sourceErrors += r.errors.size
+                if (health == "source" && r.errors.isNotEmpty()) health = "${r.errors.size} compile errors; bytecode covers those calls"
+                if (!test) store.setMeta("health:${m.name}", health) // the answer names a degraded module when it shows a body from it
                 if (r.errors.isNotEmpty()) {
                     log("  ${r.errors.size} compile errors in ${m.name}; bytecode covers those calls")
                     r.errors.take(5).forEach { log("    $it") }

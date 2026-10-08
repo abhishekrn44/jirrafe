@@ -58,6 +58,7 @@ object Render {
         }
         section(o["data"], "data") { d -> "- " + d.str("id").substringAfterLast('.') + " { " + d.str("fields") + " }" + (d["table"]?.let { "  table " + it.jsonPrimitive.content } ?: "") + (d["at"]?.let { "  @ " + it.jsonPrimitive.content } ?: "") }
         section(o["config"], "config") { c -> "- " + c.str("key") + (c["value"]?.let { " = " + it.jsonPrimitive.content } ?: "") + (c["at"]?.let { "  @ " + it.jsonPrimitive.content } ?: "") }
+        o["degraded"]?.jsonArray?.takeIf { it.isNotEmpty() }?.let { d -> appendLine(); appendLine("indexed from bytecode, not source, so bodies here are decompiled and may lack lines or callers: " + d.joinToString("; ") { it.jsonPrimitive.content }) }
         o["omitted"]?.jsonArray?.takeIf { it.isNotEmpty() }?.let { c -> appendLine(); appendLine("omitted at this budget: " + c.joinToString(", ") { it.jsonPrimitive.content } + "; a larger --token-budget returns them") }
         section(o["wiring"], "wiring (framework declarations that apply; complete for the annotations listed)") { w -> "- " + w.str("declares") + "  " + w.str("id") + (w["at"]?.let { "  @ " + it.jsonPrimitive.content } ?: "") }
         o["dependencies"]?.jsonArray?.takeIf { it.isNotEmpty() }?.let { d -> appendLine(); appendLine("dependencies: " + d.joinToString(", ") { it.jsonPrimitive.content }) }

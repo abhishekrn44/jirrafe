@@ -211,4 +211,15 @@ class QueriesTest {
         assertTrue(Queries.tokens(small) < Queries.tokens(e))
         assertContains(q.explain("zzz qqq").str("note"), "nothing matched")
     }
+
+    @Test
+    fun `an answer built on a module indexed from bytecode says so`() {
+        val degraded = SyntheticGraph.build()
+        degraded.setMeta("health:app", "bytecode only: javac died")
+        val e = Queries(degraded, "/repo", null, reader).explain("how are orders listed?")
+        assertTrue(e.containsKey("pack"), "bodies are packed")
+        assertContains(e["degraded"]!!.jsonArray.single().jsonPrimitive.content, "app: bytecode only")
+        assertContains(Render.explain(e), "indexed from bytecode, not source")
+        assertTrue(!q.explain("how are orders listed?").containsKey("degraded"), "a healthy module says nothing")
+    }
 }
