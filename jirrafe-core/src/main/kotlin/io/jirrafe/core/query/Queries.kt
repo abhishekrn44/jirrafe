@@ -906,12 +906,38 @@ class Queries(
         // a walk carries logic, not a DTO's getters or a generated builder: their shape is in `data`
         val named = { id: String -> stems.any { s -> simpleName(id).lowercase().contains(s.lowercase()) } }
         fun packable(id: String) = store.node(id)?.let { it.origin != Origin.EXTERNAL && it.file != null && it.attrs["generated"] != "true" && (layerRank(id) < 2 || named(id)) } == true
+        val trivial = { id: String -> store.node(id)?.let { (it.endLine ?: 0) - (it.startLine ?: 0) <= 1 && it.id != lead } == true }
+        // A topic crossing starts a new leg of the mechanism, and its first logic step gets a slot ahead of the first leg's
+        // siblings: "what happens when a candidate applies" is sendJob, then JobListener and existJob in job-service, then
+        // ApplicationListener back here, and all five slots went to application-service, two of them to a one-line
+        // interface method and a repository query that the pack drops anyway. Each listener in the flow, in flow order,
+        // is represented by the service method it hands the message to, or by itself when it does the work; two legs
+        fun legReps(steps: List<String>): List<String> {
+            val reps = ArrayList<String>()
+            for (c in steps) {
+                if (reps.size >= 2) break
+                if (store.edgesFrom(c, EdgeKind.CONSUMES_FROM).isEmpty()) continue
+                val delegate = store.edgesFrom(c).filter { it.kind == EdgeKind.CALLS || it.kind == EdgeKind.DISPATCHES_TO }.map { it.to }
+                    .firstOrNull { d -> d in steps && owner(d) != owner(c) && layerRank(d) == 0 && packable(d) && !trivial(d) && store.node(d)?.module == store.node(c)?.module }
+                val rep = delegate ?: c
+                if (rep !in reps && packable(rep) && !trivial(rep)) reps += rep
+            }
+            return reps
+        }
         fun walk(from: String, steps: Int): List<String> = when (from) {
             // the precomputed flow already resolved dispatch and ordered the walk: the entry, then the flow from the match on
             // (a stable sort by layer, so the service and repository steps come before the helpers the walk met first)
-            in bestFlowSteps -> (listOf(bestFlowSteps.first()) + bestFlowSteps.drop(bestFlowSteps.indexOf(from)).sortedBy { layerRank(it) }).distinct()
-            else -> chain(from).ifEmpty { listOf(from) }
-        }.filter { it == from || packable(it) }.take(steps)
+            in bestFlowSteps -> {
+                val rest = bestFlowSteps.drop(bestFlowSteps.indexOf(from))
+                val reps = legReps(rest).filter { it != from }
+                val ordered = (listOf(bestFlowSteps.first()) + rest.sortedBy { layerRank(it) }).distinct()
+                    // trivial steps stay in the walk and are dropped at pack time: they keep the first walk from spending every
+                    // slot on deep steps of its own flow (getCountryById, getStateById) that the second walk's bodies need
+                    .filter { it == from || packable(it) }.filter { it !in reps }
+                (ordered.take(maxOf(1, steps - reps.size)) + reps).distinct()
+            }
+            else -> chain(from).ifEmpty { listOf(from) }.filter { it == from || packable(it) }.take(steps)
+        }
         // each further match adds a chain only where it leads somewhere the first did not
         // with no flow to start from, the entry that reaches the match leads the answer, as a flow's entry would
         val entry = if (rankedFlows.isEmpty() && lead != null) climb(lead).firstOrNull()?.takeIf { owner(it) != owner(lead) } else null
@@ -1034,7 +1060,6 @@ class Queries(
         val whole = if (concentrated && breadth.isEmpty()) spineFiles.filter { (fileTokens[it] ?: Long.MAX_VALUE) <= WHOLE_FILE_TOKENS } else emptyList()
         val cards = if (concentrated) spineFiles.filter { it !in whole } else emptyList()
         // a one-line delegation adds a header, a citation and a line of code to say what its caller already showed
-        val trivial = { id: String -> store.node(id)?.let { (it.endLine ?: 0) - (it.startLine ?: 0) <= 1 && it.id != lead } == true }
         // the framework body the question is about comes first: "token checks on subsequent requests" means the
         // filter, not the encoder, whatever order the family lists its types in
         // what the question asks about: its own words against the member and the class it lives in
@@ -1056,9 +1081,14 @@ class Queries(
         }
         // a private helper the body calls in its own class is the mechanism (getPassword builds the password the
         // body stores; productDto is the mapping): short, and judged missing three times when left as an id
-        val helpers = pack.flatMap { b -> cleanEdges(b.id, store.edgesFrom(b.id).filter { it.kind == EdgeKind.CALLS }) { it.to }.map { it.to } }.distinct()
-            .filter { id -> pack.none { it.id == id } && pack.any { owner(it.id) == owner(id) } }
+        fun privateHelpers(of: List<String>, seen: Set<String>): List<Node> = of.flatMap { b -> cleanEdges(b, store.edgesFrom(b).filter { it.kind == EdgeKind.CALLS }) { it.to }.map { it.to } }.distinct()
+            .filter { id -> id !in seen && of.any { owner(it) == owner(id) } }
             .mapNotNull { id -> store.node(id)?.takeIf { it.kind == NodeKind.METHOD && "lombok.Generated" !in (it.attrs["annotations"] ?: "") && ((it.endLine ?: 0) - (it.startLine ?: 0)) in 1..HELPER_LINES } }
+        val packedIds = pack.map { it.id }
+        val h1 = privateHelpers(packedIds, packedIds.toSet())
+        // and a helper's own helper: persistApplication calls sendJob, which is the producer, and one level down is still the mechanism
+        val h2 = privateHelpers(h1.map { it.id }, (packedIds + h1.map { it.id }).toSet())
+        val helpers = (h1 + h2).distinctBy { it.id }
             .take(HELPERS).mapNotNull { n -> sources?.read(n, 0)?.let { s ->
                 val raw = s.text.lines().dropWhile { it.isBlank() }.map { it.replace("\t", "  ").trimEnd() }
                 val indent = raw.filter { it.isNotBlank() }.minOfOrNull { it.length - it.trimStart().length } ?: 0
