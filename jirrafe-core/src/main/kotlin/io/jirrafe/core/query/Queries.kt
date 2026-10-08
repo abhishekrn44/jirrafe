@@ -1174,7 +1174,8 @@ class Queries(
         // where a field the question names is read: "how are roles fetched" is also User.role, read at login into
         // ROLE_<ROLE> and into the token's claim; the entity is two hops from any chain, the reader lines are one fact each
         val fieldWords = stems.map { it.lowercase().removeSuffix("s") }.filter { it.length >= 3 }.toSet()
-        val readerFacts = store.nodes(NodeKind.FIELD)
+        // by name through the id index, not a load of every field: a large repo has a hundred thousand of them
+        val readerFacts = fieldWords.flatMap { w -> store.nodesLike("#$w", 50, setOf(NodeKind.FIELD)) }.distinctBy { it.id }
             .filter { f -> f.origin == Origin.REPO && f.id.substringAfterLast('#').lowercase() in fieldWords && store.node(owner(f.id))?.attrs?.get("table") != null && owner(f.id) !in spineOwners } // an entity's column, not a DTO's
             .take(2).flatMap { f ->
                 val prop = f.id.substringAfterLast('#').replaceFirstChar { it.uppercase() }
