@@ -1048,6 +1048,36 @@ class Queries(
                 }
             }
         }
+        // A topic a packed body produces to or consumes from, with every producer and consumer the graph knows across
+        // all modules and each consumer's group: the global view of a shared resource that no walk from one module
+        // reaches. job-events carries JobServiceImpl.existJob's reply to ApplicationListener, and also createJob's JobDTO
+        // to search-service-elastic's consumer; all of them in consumer group services-group, so a record goes to one
+        // of the two consumers, and no answer from either service alone said so. A `${key}` is read through the config
+        // and an environment placeholder to its default, as the plugin resolves a listener's topic
+        val placeholder = Regex("""\$\{([^}:]+)(:[^}]*)?}""")
+        fun resolveConfig(text: String): String {
+            val m = placeholder.find(text) ?: return text
+            val v = store.node("config:" + m.groupValues[1])?.attrs?.get("value") ?: m.groupValues[2].drop(1).ifEmpty { return text }
+            return v.replace(placeholder) { it.groupValues[2].drop(1).ifEmpty { it.value } }
+        }
+        fun groupOf(consumer: String): String? {
+            val ann = store.node(consumer)?.let { Attrs.annotations(it) }.orEmpty().entries.firstOrNull { it.key.endsWith("Listener") }?.value
+            val declared = ann?.get("groupId")?.let { resolveConfig(it) }
+            return declared ?: store.node("config:spring.kafka.consumer.group-id")?.attrs?.get("value")?.let { resolveConfig(it) }
+        }
+        val spineTopics = spine.flatMap { b -> (store.edgesFrom(b, EdgeKind.PRODUCES_TO) + store.edgesFrom(b, EdgeKind.CONSUMES_FROM)).map { it.to } }.distinct()
+        for (t in spineTopics) {
+            val topic = store.node(t) ?: continue
+            val who = { id: String -> "${simpleName(owner(id))}.${simpleName(id)}" + (store.node(id)?.module?.let { " ($it" } ?: "") }
+            val producers = store.edgesTo(t, EdgeKind.PRODUCES_TO).map { it.from }.distinct()
+            val consumers = store.edgesTo(t, EdgeKind.CONSUMES_FROM).map { it.from }.distinct()
+            val groups = consumers.associateWith { groupOf(it) }
+            val text = "topic " + topic.fqn + ": produced by " + (producers.takeIf { it.isNotEmpty() }?.joinToString(", ") { who(it) + (if (store.node(it)?.module != null) ")" else "") } ?: "nothing indexed") +
+                "; consumed by " + (consumers.takeIf { it.isNotEmpty() }?.joinToString(", ") { c -> who(c) + (groups[c]?.let { g -> if (store.node(c)?.module != null) ", group $g)" else " (group $g)" } ?: (if (store.node(c)?.module != null) ")" else "")) } ?: "nothing indexed") +
+                // two consumers in one group across modules: Kafka hands each record to one member of a group
+                (groups.values.filterNotNull().groupBy { it }.values.firstOrNull { it.size > 1 }?.let { g -> if (consumers.map { store.node(it)?.module }.distinct().size > 1) "; ${g.size} consumers share group ${g.first()}, so each record reaches one of them" else "" } ?: "")
+            wiring += topic to text
+        }
         val dependencies = manifest?.modules.orEmpty().flatMap { m -> m.configurations.flatMap { it.artifacts } }.filter { a -> families.any { f -> f.artifacts.any { w -> (a.name ?: "").contains(w, ignoreCase = true) } } }
             .map { "${it.group}:${it.name}:${it.version}" }.distinct().sortedBy { if ("starter" in it) 0 else 1 }.take(5)
         // What ServiceLoader finds, nothing calls: HibernateSnapshotGenerator's ten subclasses are registered in

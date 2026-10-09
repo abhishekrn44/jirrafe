@@ -66,7 +66,7 @@ class McpServerTest {
         assertTrue(client.call("community", "id" to communities.first().jsonObject["id"]!!.jsonPrimitive.content)["members"]!!.jsonArray.isNotEmpty())
         assertEquals("GET /orders", client.call("flow", "entry" to "/orders")["entry"]!!.jsonPrimitive.content)
         assertEquals(1, client.call("routes")["count"]!!.jsonPrimitive.content.toInt())
-        assertEquals(0, client.call("topics")["count"]!!.jsonPrimitive.content.toInt())
+        assertEquals(1, client.call("topics")["count"]!!.jsonPrimitive.content.toInt(), "the shipments topic")
         assertEquals(1, client.call("config", "key_prefix" to "orders")["count"]!!.jsonPrimitive.content.toInt())
         assertEquals(2, client.call("beans")["count"]!!.jsonPrimitive.content.toInt(), "orderService and the uninjected auditRepository")
         assertTrue(client.call("findings", "severity" to "warning")["count"]!!.jsonPrimitive.content.toInt() > 0)

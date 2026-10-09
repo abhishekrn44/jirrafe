@@ -154,7 +154,7 @@ class QueriesTest {
         assertEquals("flow:a.OrderController#list()", q.routes()["routes"]!!.jsonArray.single().jsonObject.str("flow"))
         assertEquals("10", q.config("orders")["keys"]!!.jsonArray.single().jsonObject.str("value"))
         assertEquals("a.OrderService", q.beans("Order")["beans"]!!.jsonArray.single().jsonObject.str("type"))
-        assertEquals(0, q.topics()["count"]!!.jsonPrimitive.content.toInt())
+        assertEquals(1, q.topics()["count"]!!.jsonPrimitive.content.toInt(), "the shipments topic")
         assertTrue(q.findings(kind = "layer-violation")["findings"]!!.jsonArray.size == 1)
         assertTrue(q.findings(node = "a.OrderService#unused()")["findings"]!!.jsonArray.size == 1)
         assertEquals("module:app", q.dependencies()["modules"]!!.jsonArray.single().jsonObject.str("id"))
@@ -233,5 +233,11 @@ class QueriesTest {
         val legacy = Render.explain(q.explain("how does the legacy export run"))
         assertContains(legacy, "LegacyExport is referenced by no indexed code outside its tests")
         assertContains(legacy, "LegacyRow is referenced only by LegacyExport")
+    }
+
+    @Test
+    fun `a topic on the spine lists every producer and consumer across modules with their groups`() {
+        val text = Render.explain(q.explain("how are shipments notified"))
+        assertContains(text, "topic shipments: produced by ShipmentNotifier.send (app); consumed by ReportService.onShipment (app, group reports), ShipmentAudit.onShipment (audit, group reports); 2 consumers share group reports, so each record reaches one of them")
     }
 }
