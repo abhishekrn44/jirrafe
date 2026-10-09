@@ -167,8 +167,10 @@ object Install {
         |   `## facts` are source lines with their location: copy them into the answer as they stand. Every claim
         |   cites one line; a relationship (A calls B, X is stored in Y) must appear on a shown line, in `calls:` or
         |   in `## facts`, otherwise write "not shown". Fetch at most once; read what is here first.
-        |3. Fetch more only in three cases, and in one call: a body that ends with `... cut at line N` continues
-        |   with $more; ids listed as `pending`; an id the answer names but does not show. $sources returns
+        |3. Fetch more only in four cases, and in one call. An answer with an `omitted at this budget:` line was
+        |   cut to fit: ask the same question once more with `--token-budget 9000` and answer from that one.
+        |   A body that ends with `... cut at line N` continues with $more; ids listed as `pending`; an id the
+        |   answer names but does not show. $sources returns
         |   several bodies at once. $node gives one node with its callers and callees. Classes inside internal
         |   jars are decompiled on demand. Read a method (`Class#method(...)`), not its whole class. Ids are
         |   pasted verbatim from an answer; an id you have not seen in an answer is found with `search <name>`
