@@ -7,11 +7,13 @@ asks "how does X work", "what calls Y" or "what breaks if I change Z" and gets t
 classes and methods, their callers and their source, every one cited as `file:line`, in a few
 calls instead of a grep session.
 
-**Half the tool calls, a quarter fewer tokens, better answers** against the same model with grep
-and file reads, measured live on eleven repositories the model had never seen: 2.7 calls per
-question against 5.8, 27% fewer tokens, and the right code reached more often (90% against 87%).
-The saving grows with the question: where grep needs ten turns to follow a mechanism, the graph
-needs three. A small model with the graph reaches the facts a large one reaches by reading
+**The same answers in a third of the calls, for less money**, against the same model with grep and
+file reads, measured live on Spring services the model had not seen and scored against the facts a
+correct answer must state: Opus with the graph matched Opus with grep on seven questions of nine
+and came within eight points on the other two, in two to four calls against four to eleven, cheaper
+on eight of the nine. Sonnet with the graph beat Sonnet with grep on four questions, tied on three
+and lost two, every one of them in one or two calls. Neither model with the graph stated a
+framework default as a fact of the code, which grep answers did twice
 ([What to expect](#what-to-expect)).
 
 Requirements: JDK 17 or 21; the project builds with Gradle 7.6+ or Maven 3.9. Kotlin modules are
@@ -142,16 +144,16 @@ overload, comment and test that mentions it, and the agent opens file after file
 one matters. jirrafe already knows the real callers (resolved by the compiler, dispatch included),
 the end-to-end flow from the entry point, and includes the method body in the first answer, so most
 questions take one call instead of a dozen. Grep also stops at an `import` into an internal jar;
-jirrafe has read that jar's bytecode. Measured on code the model had not seen: every question
-answered against seven in eight, half the tool calls, about three quarters fewer tokens read.
+jirrafe has read that jar's bytecode. Measured on Spring services the model had not seen, the same
+model on both sides: the same facts reached on seven questions of nine, at a third of the calls.
 
 **Against a general-purpose knowledge graph (graphify and similar).** Those tools extract entities
 and relations from any text with an LLM, which makes them work on anything but leaves the edges
 guessed: they know `PaymentService` is related to `Gateway`, not that `capture` calls
 `gateway.capture` at line 77 through an interface. Their answer is a list of nodes; the agent still
 opens files to read the code. jirrafe's edges are exact, the answer carries `file:line` and the
-source, and building the graph needs no LLM. Measured on the same repository and questions: the
-same recall at a third of the calls and a third of the tokens.
+source, and building the graph needs no LLM. Measured on one repository, three questions, Opus on
+both sides: the same facts at a third to a seventh of the calls and under half the cost.
 
 **Against symbol indexers for agents (LSP or tree-sitter based).** They answer "where is X defined
 or referenced", quickly and across many languages, without a build. jirrafe adds what those cannot
@@ -166,48 +168,50 @@ answers are the same and only the calls and time are saved.
 
 ## What to expect
 
-Every number here comes from live A/B runs: the same questions put to Claude Code with the jirrafe
-skill and to a clean clone with only Read, Grep and Glob, the same model on both sides, on
-repositories the model could not describe from memory (open-source libraries and small enterprise
-Spring services), scored on whether the answer reached the classes and methods a correct answer
-must name. Five questions per repository, so treat every figure as a direction, not a decimal.
+Every number here comes from live A/B runs made on 8 and 9 October 2026: the same question put to
+Claude Code with the jirrafe skill and to a clean clone with only Read, Grep and Glob, the same
+model on both sides, with no proxy or output compression between the agent and the API. Four
+Spring repositories: one the model knows (a user-management service) and three it had not seen
+(a multi-service job board on Kafka and MongoDB, an audio-ingestion service on MinIO and Kafka, a
+metadata service with a Redis cache). Nine questions, each with a list of the facts a correct answer
+must state, written from the source before any run; an answer scores a point per fact, half for a
+partial one, and a wrong claim (one that contradicts the code, cites a line that does not support
+it, or states a framework default as a fact of this code) is counted separately. Nine questions is
+a direction, not a decimal.
 
-- **Answers.** With the graph the agent reached the right code on every repository at least as
-  often as without it, and on a third of them more often. Where grep missed, it was usually
-  configuration: a key in `application.properties`, a `@Configuration` class, a filter the code
-  never calls.
-- **Turns.** Tool calls per question fell by half or more on every repository (roughly two to
-  three instead of four to six), and about half of all questions were answered in a single call.
-  Turns are what an agent's session costs in time, and what some assistants bill.
-- **Tokens and calls, live.** Eleven repositories the model had never seen (CLI tools, a chess
-  engine, a BSON codec, a MongoDB server, a Liquibase extension, a fingerprint matcher), the
-  questions taken blind from each project's own README, the same model with the skill against a
-  clean clone with grep and file reads: **53% fewer tool calls (2.7 against 5.8) and 27% fewer
-  tokens per question**, reaching the right code more often (90% against 87%), at lower cost.
-  Where grep had to follow a mechanism across files it took eight to twelve turns; the graph took
-  two to four. Offline, against a mechanical grep baseline on eight repositories: 55% fewer tokens
-  and 83% fewer calls (1.3 against 7.8), 76% against 48% recall.
-- **A cheaper model finds what an expensive one finds.** Six repositories, twenty questions, each
-  side run the same day: a small or mid-size model with the graph against a larger model with grep
-  (Haiku against Sonnet, and on the hardest repository Sonnet against Opus). **78% recall at $0.030
-  a question against 85% at $0.103** - a third of the cost, 2.6 tool calls against 6.2, 43% fewer
-  tokens, the same wall clock. Four of the six tied on recall; on Spring Petclinic the small model
-  with the graph answered every question in 1.8 calls at $0.020, against 4.4 calls at $0.054.
-  The graph changes what a model finds, not how well it writes it up: judged blind on the prose
-  itself, the larger model still explains it better, so read this as retrieval parity, not answer
-  parity.
-- **Unprompted.** The skill loaded on its own for every question shape tested ("how is", "where
-  is", "find the code that", "which class", "what calls").
-- **Docs.** For "how do I use X" questions on a project with real usage documentation, the graph
-  answered seven in ten; grep over the source found none.
+- **Same model, Opus.** With the graph, the same score as with grep on seven questions of nine
+  (five of them full marks on both sides), seven and eight points behind on the other two. Two to
+  four calls a question against four to eleven; cheaper on eight of the nine, by $0.02 to $0.15,
+  and $0.02 dearer on the one where the whole file is shorter than the graph's answer.
+- **Same model, Sonnet.** Ahead of grep on four questions (by 7, 17, 17 and 29 points), level on
+  three, behind on two (by 6 and 7). One call on eight questions and two on the ninth, against two
+  to ten; cheaper on seven, equal on one, dearer by a cent on one.
+- **A cheaper model against a dearer one.** Sonnet with the graph against Opus with grep: level
+  on three questions, 5 to 11 points behind on six, at a quarter to a sixth of the cost ($0.04 to
+  $0.11 a question against $0.21 to $0.28). The graph closes most of the distance between the two
+  models; it does not close it. Where it falls short the line was in the answer and the smaller
+  model summarised past it.
+- **Wrong claims.** Across the eighteen graph runs: no claim that contradicted the code, one
+  caller attributed to the wrong class (half a point), and one shared assumption (both sides wrote
+  that the JWT library enforces expiry, which the code does not show). Grep's wrong claims were
+  framework defaults stated as facts of the code: which password encoder the authentication
+  manager uses, and that same expiry assumption.
+- **What the graph carries that grep has to read for.** The facts grep found only by opening
+  whole files, and the graph now states as lines: what nothing reads or calls (an unused cache
+  repository, a constant never read, a service method no controller reaches), a topic's every
+  producer and consumer across modules with their consumer groups, a bean the chain injects or a
+  class builds its own instance of, a key written under a literal nothing else reads, and where a
+  method too long to show exits.
+- **Against a general-purpose knowledge graph** (graphify), one repository, three questions, Opus
+  on both sides: the same facts, at 12 to 21 calls against 3 to 9 and $0.51 to $0.74 a question
+  against $0.23 to $0.33.
 - **Internal jars.** On a project carrying two mostly unused libraries, cutting them to what the
-  code reaches shrank the graph by a third and raised recall.
-- **Against a general-purpose knowledge graph** (graphify) on the same repository and questions:
-  the same recall at a third of the calls and a third of the tokens.
+  code reaches shrank the graph by a third.
 
-Two honest limits of the measurement: recall means the answer named the right code with the right
-citations, not that its explanation was good; and the cost of a session depends on prompt caching,
-so compare configurations on the same day, as these were.
+Two honest limits of the measurement: the scorer was the same agent that built the tool, reading
+both answers against the source, not a blind judge; and the cost of a session depends on prompt
+caching, so compare configurations run on the same day, as these were, and treat differences under
+three cents as noise.
 
 Run it on your own project: copy `jirrafe-fixtures/benchmark/TEMPLATE.json`, replace each
 `question` with one of yours and each `expected` entry with the node ids a correct answer must
