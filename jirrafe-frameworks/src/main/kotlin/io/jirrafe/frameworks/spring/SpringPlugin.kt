@@ -50,6 +50,7 @@ class SpringPlugin : FrameworkPlugin {
             producers()
             remoteCalls()
             scheduled()
+            fallbacks()
             selfInvocations()
             store.flush()
         }
@@ -521,6 +522,28 @@ class SpringPlugin : FrameworkPlugin {
             }
         }
 
+        /**
+         * A resilience fallback is called by the framework, not by code: `@CircuitBreaker(fallbackMethod = "x")` names
+         * a same-class method the proxy invokes when the call fails, and a Spring Retry `@Recover` method is invoked
+         * for the class's `@Retryable` methods once the retries are spent. Without the edge, every fallback was a
+         * dead-code finding, missing from impact, and off the flow. The edge is a call from the guarded method.
+         */
+        private fun fallbacks() {
+            for (cls in classes.values) {
+                val members = members(cls).filter { it.kind == NodeKind.METHOD }
+                val recovers = members.filter { RECOVER in annotationsOf(it) }
+                for (m in members) {
+                    val ann = annotationsOf(m)
+                    for (name in RESILIENCE.mapNotNull { ann[it]?.get("fallbackMethod") }.filter { it.isNotEmpty() }.distinct()) {
+                        for (target in members.filter { it.id != m.id && it.id.substringAfter('#').substringBefore('(') == name }) {
+                            store.edge(Edge(m.id, target.id, EdgeKind.CALLS, Resolution.SPRING))
+                        }
+                    }
+                    if (RETRYABLE in ann) for (r in recovers) if (r.id != m.id) store.edge(Edge(m.id, r.id, EdgeKind.CALLS, Resolution.SPRING))
+                }
+            }
+        }
+
         private fun selfInvocations() {
             for (cls in classes.values) {
                 val classProxies = annotationsOf(cls).keys.filter { it in PROXIED }
@@ -660,7 +683,18 @@ class SpringPlugin : FrameworkPlugin {
             "org.springframework.cache.annotation.CacheEvict", "org.springframework.cache.annotation.CachePut",
             "org.springframework.cache.annotation.Caching", "org.springframework.retry.annotation.Retryable",
             "org.springframework.security.access.prepost.PreAuthorize", "org.springframework.security.access.annotation.Secured",
+            // resilience4j's aspects proxy the bean the same way: a self-call skips the retry, the breaker and the limiter
+            "io.github.resilience4j.retry.annotation.Retry", "io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker",
+            "io.github.resilience4j.ratelimiter.annotation.RateLimiter", "io.github.resilience4j.bulkhead.annotation.Bulkhead",
+            "io.github.resilience4j.timelimiter.annotation.TimeLimiter",
         )
+        val RESILIENCE = setOf(
+            "io.github.resilience4j.retry.annotation.Retry", "io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker",
+            "io.github.resilience4j.ratelimiter.annotation.RateLimiter", "io.github.resilience4j.bulkhead.annotation.Bulkhead",
+            "io.github.resilience4j.timelimiter.annotation.TimeLimiter",
+        )
+        const val RETRYABLE = "org.springframework.retry.annotation.Retryable"
+        const val RECOVER = "org.springframework.retry.annotation.Recover"
         val PLACEHOLDER = Regex("\\$\\{([^}:]+)(:[^}]*)?}")
         val TOPIC_NAME = Regex("^[A-Za-z0-9][A-Za-z0-9._-]{2,}$")
         val GENERIC_REPOSITORY = Regex("Repository<L([^;<]+);")

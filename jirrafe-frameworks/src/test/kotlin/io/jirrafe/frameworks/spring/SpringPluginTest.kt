@@ -113,7 +113,7 @@ class SpringPluginTest {
         val finding = store.edgesFrom("com.example.orders.OrderService", EdgeKind.HAS_FINDING).map { store.node(it.to)!! }
             .single { it.attrs["kind"] == "undefined-config-key" }
         assertEquals("orders.undefined-key", finding.attrs["key"])
-        assertEquals(28, finding.startLine, "cited at the @Value field, not at the class")
+        assertEquals(31, finding.startLine, "cited at the @Value field, not at the class")
     }
 
     @Test
@@ -125,6 +125,18 @@ class SpringPluginTest {
         assertEquals("ShipmentCache", cache.attrs["table"])
         assertEquals("redis hash", cache.attrs["store"])
         assertEquals(null, store.node("com.example.orders.Order")?.attrs?.get("store"), "a JPA entity keeps the plain table")
+    }
+
+    @Test
+    fun fallbacksAreCalledByTheFramework() {
+        assertEquals(setOf("com.example.orders.OrderService#quoteFallback(com.example.orders.Order,java.lang.Throwable)"),
+            targets("com.example.orders.OrderService#guardedQuote(com.example.orders.Order)", EdgeKind.CALLS).filter { "Fallback" in it }.toSet(),
+            "@CircuitBreaker's fallbackMethod is a call from the guarded method")
+        assertEquals(setOf("com.example.orders.OrderService#recoverQuote(java.lang.Exception,com.example.orders.Order)"),
+            targets("com.example.orders.OrderService#retriedQuote(com.example.orders.Order)", EdgeKind.CALLS).filter { "recover" in it }.toSet(),
+            "a @Recover method is called for the class's @Retryable methods")
+        val findings = store.nodes(NodeKind.FINDING).filter { it.attrs["kind"] == "self-invocation" }.map { it.fqn }
+        assertTrue(findings.none { "guardedQuote" in it }, "no self-invocation from the framework edge: $findings")
     }
 
     @Test

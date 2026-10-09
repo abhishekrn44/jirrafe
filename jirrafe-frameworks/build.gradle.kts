@@ -16,6 +16,8 @@ dependencies {
     testRuntimeOnly("org.springframework.data:spring-data-mongodb")
     testRuntimeOnly("org.springframework.data:spring-data-redis")
     testRuntimeOnly("org.springframework.kafka:spring-kafka")
+    testRuntimeOnly("org.springframework.retry:spring-retry")
+    testRuntimeOnly("io.github.resilience4j:resilience4j-annotations:2.2.0")
     testRuntimeOnly("jakarta.persistence:jakarta.persistence-api")
     testImplementation(kotlin("test"))
 }

@@ -4,7 +4,10 @@ import com.example.lib.Greeter;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
+import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
 import org.springframework.cache.annotation.Cacheable;
+import org.springframework.retry.annotation.Recover;
+import org.springframework.retry.annotation.Retryable;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -74,5 +77,25 @@ public class OrderService {
 
     public long quote(Order order) {
         return pricing.price(order.getId());
+    }
+
+    /** The breaker calls the fallback; nothing in the code does. */
+    @CircuitBreaker(name = "pricing", fallbackMethod = "quoteFallback")
+    public long guardedQuote(Order order) {
+        return pricing.price(order.getId());
+    }
+
+    private long quoteFallback(Order order, Throwable t) {
+        return 0;
+    }
+
+    @Retryable
+    public long retriedQuote(Order order) {
+        return pricing.price(order.getId());
+    }
+
+    @Recover
+    public long recoverQuote(Exception e, Order order) {
+        return -1;
     }
 }
