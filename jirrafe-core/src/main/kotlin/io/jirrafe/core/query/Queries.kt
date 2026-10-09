@@ -1173,7 +1173,19 @@ class Queries(
                 val raw = s.text.lines().dropWhile { it.isBlank() }.map { it.replace("\t", "  ").trimEnd() }
                 val indent = raw.filter { it.isNotBlank() }.minOfOrNull { it.length - it.trimStart().length } ?: 0
                 Pack(n.id, s, raw.map { it.drop(minOf(indent, it.length - it.trimStart().length)) }.joinToString("\n"), false) } } }
-        val packAll = pack + helpers + siblings
+        // A packed predicate is answered by its callers: existsByUsername says nothing about what "taken" means;
+        // createNewUser, which calls the repository query it wraps and returns null on true, does. The callers short
+        // enough to show ride as bodies; a long one keeps its call-site fact below, with the condition chain it sits in
+        val predicateCallers = pack.filter { b -> store.node(b.id)?.let { n -> "boolean" in (n.signature ?: "") && (n.endLine ?: 0) - (n.startLine ?: 0) <= 10 } == true }
+            .flatMap { b -> listOf(b.id) + store.edgesFrom(b.id, EdgeKind.CALLS).map { it.to }.filter { store.node(owner(it))?.attrs?.get("layer") == "repository" } }.distinct()
+            .flatMap { t -> store.edgesTo(t, EdgeKind.CALLS).map { it.from } }.distinct()
+            .filter { id -> id !in taken && siblings.none { it.id == id } && store.node(id)?.let { n -> n.kind == NodeKind.METHOD && n.origin == Origin.REPO && n.attrs["test"] != "true" && ((n.endLine ?: 0) - (n.startLine ?: 0)) in 2..HELPER_LINES } == true }
+            .take(2).mapNotNull { id -> store.node(id)?.let { n -> sources?.read(n, 0)?.let { s ->
+                val raw = s.text.lines().dropWhile { it.isBlank() }.map { it.replace("\t", "  ").trimEnd() }
+                val indent = raw.filter { it.isNotBlank() }.minOfOrNull { it.length - it.trimStart().length } ?: 0
+                Pack(n.id, s, raw.map { it.drop(minOf(indent, it.length - it.trimStart().length)) }.joinToString("\n"), false) } } }
+        val predicateCallerIds = predicateCallers.map { it.id }.toSet()
+        val packAll = pack + helpers + siblings + predicateCallers
         val packed = packAll.map { it.id }.toHashSet()
         // the file as the agent would have read it: cheaper than fragments below the threshold, and coherent
         val wholeFiles = whole.mapNotNull { f ->
@@ -1225,11 +1237,11 @@ class Queries(
         val leadTargets = pack.sortedByDescending { hits[it.id] ?: 0.0 }.let { it.take(1) + helpers + it.drop(1) }.flatMap { b ->
             listOf(b.id) + cleanEdges(b.id, store.edgesFrom(b.id).filter { it.kind == EdgeKind.CALLS }) { it.to }.map { it.to }
                 .filter { store.node(owner(it))?.attrs?.get("layer") == "repository" && store.node(it)?.origin == Origin.REPO } }.distinct()
-        for (t in leadTargets) for (c in cleanEdges(t, store.edgesTo(t)) { it.from }.map { it.from }.distinct().filter { it !in packed && store.node(it)?.origin == Origin.REPO }.take(3)) {
+        for (t in leadTargets) for (c in cleanEdges(t, store.edgesTo(t)) { it.from }.map { it.from }.distinct().filter { (it !in packed || it in predicateCallerIds) && store.node(it)?.origin == Origin.REPO }.take(3)) {
             if (callerFacts.size >= FACTS) break
             val caller = store.node(c) ?: continue
             if (caller.kind != NodeKind.METHOD && caller.kind != NodeKind.CONSTRUCTOR) continue
-            sources?.read(caller, 0)?.let { src ->
+            if (c !in packed) sources?.read(caller, 0)?.let { src ->
                 val ls = src.text.lines()
                 // the call site the extractor recorded on the edge; a text search only when the edge came from bytecode
                 val i = store.edgesFrom(c, EdgeKind.CALLS).firstOrNull { it.to == t }?.line?.minus(src.startLine)?.takeIf { it in ls.indices }
@@ -1238,7 +1250,16 @@ class Queries(
                     // the call and what it decides: the judge wanted the 409 two lines under the `if (exists...)`, not the test alone
                     val guarded = (i + 1..minOf(i + 3, ls.lastIndex)).map { ls[it].trim() }.takeWhile { it.isNotEmpty() && !it.startsWith("}") }
                         .let { tail -> val k = tail.indexOfFirst { l -> l.startsWith("throw ") || l.startsWith("return ") || "ResponseEntity" in l || "Status" in l }; if (k >= 0) tail.take(k + 1) else emptyList() }
-                    callerFacts += "${simpleName(owner(c))}.${simpleName(c)} calls ${simpleName(t)}:  " + (listOf(ls[i].trim()) + guarded).joinToString(" ") to "${relative(src.file)}:${src.startLine + i}"
+                    // the condition chain the call sits in: `} else if (!existsByUsername(..))` says nothing without the `if`
+                    // above it, which is the pending-request check that runs first
+                    var top = i
+                    if (ls[i].trim().let { it.startsWith("} else if") || it.startsWith("else if") }) {
+                        var k = i - 1
+                        while (k >= 0 && i - k <= 6 && !ls[k].trim().startsWith("if (")) k--
+                        if (k >= 0 && ls[k].trim().startsWith("if (")) top = k
+                    }
+                    val chain = (top until i).map { ls[it].trim() }.filter { it.isNotEmpty() }
+                    callerFacts += "${simpleName(owner(c))}.${simpleName(c)} calls ${simpleName(t)}:  " + (chain + listOf(ls[i].trim()) + guarded).joinToString(" ") to "${relative(src.file)}:${src.startLine + top}"
                 }
             }
             // what the endpoint does with that caller's result: createNewUser returns null for a taken name, and the
@@ -1314,7 +1335,11 @@ class Queries(
             val readers = store.edgesTo(field, EdgeKind.READS_FIELD).map { it.from }.filter { !generated(it) } +
                 store.edgesFrom(owner(e.to), EdgeKind.CONTAINS).map { it.to }.filter { simpleName(it) == "get$prop" || simpleName(it) == "is$prop" }.flatMap { g -> store.edgesTo(g, EdgeKind.CALLS).map { it.from }.filter { !generated(it) } }
             val label = "${simpleName(owner(e.to))}.${field.substringAfterLast('#')}"
-            if (readers.isEmpty() && store.node(field) != null && deadEnds.none { it.first.startsWith("$label ") })
+            // a column a derived query names is read by that query: AuthRepo.findByUsername reads UserAuthentication.username,
+            // and the graph has no edge for a read Spring Data performs from a method name
+            val queried = store.edgesTo(owner(e.to), EdgeKind.MAPS_TO_TABLE).map { it.from }
+                .flatMap { r -> store.edgesFrom(r, EdgeKind.CONTAINS).map { simpleName(it.to) } }.any { it.contains(prop) }
+            if (readers.isEmpty() && !queried && store.node(field) != null && deadEnds.none { it.first.startsWith("$label ") })
                 (e.line?.let { l -> sources?.read(nodes[b.id] ?: store.node(b.id)!!, 0)?.let { src -> src.text.lines().getOrNull(l - src.startLine)?.let { it.trim() to "${relative(src.file)}:$l" } } }
                     ?: lineOf(nodes[b.id] ?: store.node(b.id)!!, "$name("))
                     // "never read" holds for indexed code: reflection, JPQL strings and templates are not in the graph
@@ -1340,7 +1365,10 @@ class Queries(
                             "${simpleName(owner(e.from))}.${simpleName(e.from)} reads ${simpleName(owner(f.id))}.${f.id.substringAfterLast('#')}:  ${t.trim()}" to "${relative(src.file)}:${e.line}" } }
                     }
             }
-        facts += deadEnds.sortedByDescending { d -> stems.count { st -> d.first.substringBefore(" is set").lowercase().contains(st.lowercase().take(5)) } }.take(2)
+        // the dead ends the question names, else one: createdBy and modifiedBy are set on every entity and read by nobody,
+        // and two such lines on "is the username taken" cost the slot the pending-request check needed
+        val deadEndWords = { d: Pair<String, String> -> stems.count { st -> d.first.substringBefore(" is set").lowercase().contains(st.lowercase().take(5)) } }
+        facts += deadEnds.sortedByDescending(deadEndWords).let { ds -> ds.filter { deadEndWords(it) > 0 }.take(2).ifEmpty { ds.take(1) } }
         // What is declared and used by nothing, as the dead-code findings on declarations in the question's scope: the
         // packed classes and their members, their packages, and the classes a question word names. "How are lookups
         // cached" is answered in part by TrackCacheRepository, which nothing injects, and no path from the question
@@ -1391,6 +1419,16 @@ class Queries(
         // a unique column only when the question names it: the username constraint answers "is the name taken", and on
         // the password question three such lines took the slots the getPassword callers needed
         facts += constraints.filter { (t, _) -> t.substringBefore(':').substringAfter('.').lowercase().let { col -> stems.any { st -> col.contains(st.lowercase().take(5)) } } }
+        // a repository method the chain calls that is declared without a body or @Query: Spring Data derives the query
+        // from its name, and "how is the username checked" is answered by that declaration, not by a body nothing has
+        val derivedQueries = leadTargets.filter { t -> stems.any { st -> simpleName(t).lowercase().contains(st.lowercase().take(5)) } }.mapNotNull { t ->
+            val n = store.node(t) ?: return@mapNotNull null
+            val o = store.node(owner(t)) ?: return@mapNotNull null
+            if (o.kind != NodeKind.INTERFACE || Attrs.annotations(n).keys.any { it.endsWith("Query") }) return@mapNotNull null
+            if ((store.edgesFrom(o.id, EdgeKind.EXTENDS) + store.edgesFrom(o.id, EdgeKind.IMPLEMENTS)).none { "springframework.data" in it.to }) return@mapNotNull null
+            lineOf(n, simpleName(t) + "(")?.let { (text, at) -> "${simpleName(o.id)}.${simpleName(t)} is declared without a body or @Query, so Spring Data derives the query from its name:  $text" to at }
+        }.take(2)
+        facts += derivedQueries // the check itself, before who calls it
         facts += callerFacts
         facts += readerFacts
         facts += absences.filter { it.third == 0 }.take(1).map { it.first to it.second }
@@ -1472,7 +1510,7 @@ class Queries(
                 // wiring sites and the matches were not: a workflow's second step was cut while its map stayed
                 // the spine is capped at PACK_MAX already; the wiring bodies after it are chosen one by one and ride at the top level
                 // (the encoder bean evicted the details service on sign-in when the cap covered both)
-                val bodies = pack.cap(when { l >= 20 -> PACK_MAX + WIRING_BODIES; l >= 3 -> 4; l >= 2 -> 3; l >= 1 -> 1; else -> 0 }) + (if (l >= 3) helpers + siblings else emptyList())
+                val bodies = pack.cap(when { l >= 20 -> PACK_MAX + WIRING_BODIES; l >= 3 -> 4; l >= 2 -> 3; l >= 1 -> 1; else -> 0 }) + (if (l >= 3) helpers + siblings + predicateCallers else emptyList())
                 if (facts.isNotEmpty()) put("facts", buildJsonArray { for ((t, at) in facts.cap(if (l >= 5) FACTS else 3)) add(buildJsonObject { put("text", t); put("at", at) }) })
                 if (bodies.isNotEmpty()) put("pack", buildJsonArray {
                     for (p in bodies) add(buildJsonObject {

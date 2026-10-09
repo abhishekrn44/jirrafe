@@ -240,4 +240,10 @@ class QueriesTest {
         val text = Render.explain(q.explain("how are shipments notified"))
         assertContains(text, "topic shipments: produced by ShipmentNotifier.send (app); consumed by ReportService.onShipment (app, group reports), ShipmentAudit.onShipment (audit, group reports); 2 consumers share group reports, so each record reaches one of them")
     }
+
+    @Test
+    fun `a repository method without a body or @Query is a derived query fact`() {
+        val text = Render.explain(q.explain("how does findAll list orders"))
+        assertContains(text, "OrderRepository.findAll is declared without a body or @Query, so Spring Data derives the query from its name:  // source of a.OrderRepository#findAll()  @ src/a/OrderRepository.java:10")
+    }
 }
