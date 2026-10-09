@@ -3,6 +3,11 @@ orders:
   topic: orders-placed
   pricing-url: http://pricing.internal/api
   api-key: change-me
+resilience4j:
+  circuitbreaker:
+    instances:
+      pricing:
+        failure-rate-threshold: 50
 spring:
   application:
     name: orders

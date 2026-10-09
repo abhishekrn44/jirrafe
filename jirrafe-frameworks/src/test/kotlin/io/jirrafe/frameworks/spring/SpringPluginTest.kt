@@ -137,6 +137,9 @@ class SpringPluginTest {
             "a @Recover method is called for the class's @Retryable methods")
         val findings = store.nodes(NodeKind.FINDING).filter { it.attrs["kind"] == "self-invocation" }.map { it.fqn }
         assertTrue(findings.none { "guardedQuote" in it }, "no self-invocation from the framework edge: $findings")
+        assertEquals(setOf("config:resilience4j.circuitbreaker.instances.pricing.failure-rate-threshold"),
+            targets("com.example.orders.OrderService#guardedQuote(com.example.orders.Order)", EdgeKind.BINDS_CONFIG),
+            "the guarded method binds its instance's configuration")
     }
 
     @Test

@@ -51,6 +51,7 @@ class SpringPlugin : FrameworkPlugin {
             remoteCalls()
             scheduled()
             fallbacks()
+            resilienceConfig()
             selfInvocations()
             store.flush()
         }
@@ -540,6 +541,22 @@ class SpringPlugin : FrameworkPlugin {
                         }
                     }
                     if (RETRYABLE in ann) for (r in recovers) if (r.id != m.id) store.edge(Edge(m.id, r.id, EdgeKind.CALLS, Resolution.SPRING))
+                }
+            }
+        }
+
+        /**
+         * `@Retry(name = "mongoRetry")` is configured by `resilience4j.retry.instances.mongoRetry.*`: the retry count and
+         * the wait are those keys, and nothing in the code names them. The guarded method binds every key under its
+         * instance, so a question about the retry shows its values as it shows a `@Value` key.
+         */
+        private fun resilienceConfig() {
+            for (m in store.nodes(NodeKind.METHOD)) {
+                val ann = annotationsOf(m)
+                for (a in RESILIENCE) {
+                    val name = ann[a]?.get("name")?.takeIf { it.isNotEmpty() } ?: continue
+                    val prefix = "resilience4j." + a.substringAfterLast('.').lowercase() + ".instances." + name + "."
+                    for (key in config.keys.filter { it.startsWith(prefix) }) store.edge(Edge(m.id, "config:$key", EdgeKind.BINDS_CONFIG, Resolution.SPRING))
                 }
             }
         }
