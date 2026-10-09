@@ -1263,6 +1263,13 @@ class Queries(
                     }
                     val chain = (top until i).map { ls[it].trim() }.filter { it.isNotEmpty() }
                     callerFacts += "${simpleName(owner(c))}.${simpleName(c)} calls ${simpleName(t)}:  " + (chain + listOf(ls[i].trim()) + guarded).joinToString(" ") to "${relative(src.file)}:${src.startLine + top}"
+                    // a caller too long to show: where it exits, one line each. saveRequest returns null on a pending request
+                    // and again, 107 lines later, for an existing user, and the controller cannot tell the two apart; the
+                    // second null was in a body nothing packs
+                    if (ls.size > HELPER_LINES) {
+                        val exits = ls.withIndex().filter { (_, l) -> l.trim().let { it.startsWith("return ") || it == "return;" } }.take(4)
+                        if (exits.size > 1) callerFacts += "${simpleName(owner(c))}.${simpleName(c)} exits:  " + exits.joinToString(" ... ") { (k, l) -> l.trim() + " [:${src.startLine + k}]" } to "${relative(src.file)}:${src.startLine + exits.first().index}"
+                    }
                 }
             }
             // what the endpoint does with that caller's result: createNewUser returns null for a taken name, and the
