@@ -427,7 +427,9 @@ class Query : CoreCliktCommand(name = "query") {
         System.setOut(java.io.PrintStream(java.io.FileOutputStream(java.io.FileDescriptor.out), true, "UTF-8")) // Javadoc is not cp1252
         val request = Daemon.Request(tool, texts, budget, source, depth, diff, lines, format, licenses)
         // a daemon holding the graph open answers in milliseconds; a fresh JVM takes two seconds before the graph is even open
-        val answer = (if (noDaemon) null else Daemon.ask(out, request))
+        // JIRRAFE_DEBUG prints the ranking on stderr of the process that answers; a daemon started earlier has no such
+        // variable and its stderr goes to daemon.log, so a debug run answers in this process
+        val answer = (if (noDaemon || System.getenv("JIRRAFE_DEBUG") == "1") null else Daemon.ask(out, request))
             ?: GraphStore.open(db).use { store -> Daemon.answer(root, out, store, request) }.also { if (!noDaemon) Daemon.spawn(root, launcher()) }
         if (answer.error != null) throw CliktError(answer.error)
         echo(answer.text)
