@@ -48,7 +48,7 @@ class Queries(
         private const val PACK_MAX = 6 // bodies in one answer
         private const val HELPERS = 3 // same-class private helpers appended to the bodies
         private const val HELPER_LINES = 25
-        private const val FACTS = 8 // evidence lines
+        private const val FACTS = 10 // evidence lines: at eight, the derived query and the chained call site pushed the outcome off
         private const val PACK_LINES = 120 // per body; a longer method is the agent's own call to read
         private const val DATA_CLASSES = 4
         private const val DATA_FIELDS = 20
@@ -162,6 +162,8 @@ class Queries(
         // `.createNewUser(`: the call, not the handler's own declaration when the two share a name
         val i = ls.indexOfFirst { ".$callee(" in it }.takeIf { it >= 0 } ?: return null
         val picked = LinkedHashSet<Int>()
+        // the test on the result decides between the outcomes: `if (map != null)` is what makes the 409 the null branch
+        if (i + 1 <= ls.lastIndex && ls[i + 1].trim().let { it.startsWith("if (") || it.startsWith("if(") }) picked += i + 1
         for (j in i + 1..minOf(i + 12, ls.lastIndex)) {
             val t = ls[j]
             if ("HttpStatus." in t || "throw " in t || ".status(" in t) {
@@ -170,7 +172,8 @@ class Queries(
             }
         }
         if (picked.isEmpty()) return null
-        val text = (listOf(ls[i].trim()) + picked.map { ls[it].trim() }).joinToString(" ... ").take(400)
+        // long enough for both outcomes: at 400 the 409 after the 201 was cut from the end
+        val text = (listOf(ls[i].trim()) + picked.sorted().map { ls[it].trim() }).joinToString(" ... ").take(640)
         return text to "${relative(src.file)}:${src.startLine + i}"
     }
 
