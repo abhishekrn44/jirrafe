@@ -29,10 +29,16 @@ subprojects {
             }
         }
     }
+    // Java 17 bytecode from whatever JDK runs Gradle (17 or 21), and nothing downloaded: a toolchain requirement
+    // with the foojay resolver fetched a JDK when the installed one was not exactly 17, and on a restricted
+    // machine that download hung the build at compileKotlin with no message
     plugins.withId("java") {
-        extensions.configure<JavaPluginExtension> {
-            toolchain { languageVersion.set(JavaLanguageVersion.of(17)) }
-        }
+        tasks.withType<JavaCompile>().configureEach { options.release.set(17) }
         tasks.withType<Test>().configureEach { useJUnitPlatform() }
+    }
+    plugins.withId("org.jetbrains.kotlin.jvm") {
+        tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {
+            compilerOptions.jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
+        }
     }
 }

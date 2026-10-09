@@ -50,6 +50,14 @@ jirrafe --help
 That PATH lasts for the session; to keep it, add the `bin` directory under System Properties ->
 Environment Variables, or run `setx PATH "<that directory>;$env:PATH"` once.
 
+On a machine without open internet: the build needs a JDK 17 or 21 already installed and on
+`JAVA_HOME` (it downloads none) and the Gradle cache warmed once, either by running the build on a
+connected machine and copying `~/.gradle/caches` across, or by pointing `GRADLE_USER_HOME` at a
+copy. Then build with `./gradlew --offline :jirrafe-cli:installDist`. If it stops at
+`compileKotlin` with no message, run it with `--info`: a line about provisioning a toolchain means
+a JDK download, a line about the Kotlin daemon means a blocked loopback socket; the build is
+configured to need neither.
+
 From the first release on, the fat jar runs anywhere Java does
 (`java -jar jirrafe-<version>-all.jar <command>`), and the manifests under `packaging/` cover
 Homebrew, Scoop, SDKMAN and jbang. Release assets are built by `.github/workflows/release.yml`.
