@@ -191,11 +191,6 @@ a direction, not a decimal.
   $0.11 a question against $0.21 to $0.28). The graph closes most of the distance between the two
   models; it does not close it. Where it falls short the line was in the answer and the smaller
   model summarised past it.
-- **Wrong claims.** Across the eighteen graph runs: no claim that contradicted the code, one
-  caller attributed to the wrong class (half a point), and one shared assumption (both sides wrote
-  that the JWT library enforces expiry, which the code does not show). Grep's wrong claims were
-  framework defaults stated as facts of the code: which password encoder the authentication
-  manager uses, and that same expiry assumption.
 - **What the graph carries that grep has to read for.** The facts grep found only by opening
   whole files, and the graph now states as lines: what nothing reads or calls (an unused cache
   repository, a constant never read, a service method no controller reaches), a topic's every
