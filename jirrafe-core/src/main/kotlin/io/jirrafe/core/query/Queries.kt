@@ -767,8 +767,10 @@ class Queries(
         }
         // "which routes ...", "what topics ...": the question names a kind, so list that kind (filtered by the other words)
         val kindHits = ArrayList<Node>() // the kind the question named: these lead the matches whatever a name scored
+        var bareKind = false // "what routes exist": the kind word with nothing else is always a listing
         for ((word, kind) in KIND_WORDS) if (words.any { stem(it.lowercase()) == word }) {
             val rest = words.filter { stem(it.lowercase()) != word }
+            if (rest.isEmpty()) bareKind = true
             val scoped = if (rest.isEmpty()) emptyList() else
                 (find(rest.joinToString(" "), 10, setOf(kind)) + rest.flatMap { find(stem(it), 5, setOf(kind)) }).distinctBy { it.id }
             // a kind the question named is the answer when the question is only about that kind ("which endpoints
@@ -785,8 +787,10 @@ class Queries(
             if (listed.isNotEmpty()) { listed.forEachIndexed { i, n -> hit(n, 2.0 / (i + 1)) }; kindHits += listed }
             else store.nodes(kind).filter { it.attrs["remote"] != "true" }.take(10).forEachIndexed { i, n -> hit(n, 0.5 / (i + 1)) }
         }
-        // "what routes exist for authentication" is answered by the list; "how does the signin route work" by its body
-        val listing = kindHits.isNotEmpty() && !question.trim().lowercase().startsWith("how")
+        // "what routes exist for authentication" is answered by the list; "how does the signin route work" by its body;
+        // and "what does the search endpoint return", whose words resolve to one route, by that route's mechanism:
+        // it was a listing of one, with no body, and the answer could only name the route
+        val listing = kindHits.isNotEmpty() && !question.trim().lowercase().startsWith("how") && (bareKind || kindHits.size > 1)
         if (hits.isEmpty()) for (w in words) store.nodesLike(w, 10).filter { wantsDocs || it.kind != NodeKind.DOC }.forEach { hit(it, 0.5) }
         // a hit on wiring (route, topic, config key, bean) is really about the code attached to it
         for ((id, score) in hits.toList()) {
@@ -863,8 +867,19 @@ class Queries(
         val kindOrder = listOf("route", "consumer", "job", "main")
         // two flows covering the question alike ("creating a user": self-registration and the admin's request) are
         // told apart by which one contains the best-scoring match; the tie went to store order before
+        // A route the question named is the question: "the search endpoint" hit `route:GET /search`, and the x3 on its
+        // flow's score still lost to a flow whose steps covered one more of the question's words. The best route hit,
+        // when it scores at least half the best hit of all, pins its handler's flow to the top
+        // Only when the question speaks of a route: "a candidate applies for a job" also hits `GET /apply`, and pinning
+        // that handed the answer to findAll. A verb in the question picks between routes on one path
+        val routeWords = setOf("endpoint", "endpoints", "route", "routes", "api", "url", "get", "post", "put", "delete", "patch")
+        val asksRoute = words.any { it.lowercase() in routeWords }
+        val routeFlows = if (!asksRoute) emptySet() else hits.entries.filter { nodes[it.key]?.kind == NodeKind.HTTP_ROUTE }
+            .sortedWith(compareByDescending<Map.Entry<String, Double>> { e -> if (words.any { it.equals(nodes[e.key]?.attrs?.get("verb"), ignoreCase = true) }) 1 else 0 }.thenByDescending { it.value })
+            .firstOrNull()?.let { e -> nodes[e.key]?.attrs?.get("handler")?.let { setOf("flow:$it") } }.orEmpty()
         val rankedFlows = flows.entries.sortedWith(
-            compareByDescending<Map.Entry<String, Double>> { store.node(it.key)?.let { f -> coverage(f) } ?: 0 }
+            compareBy<Map.Entry<String, Double>> { if (it.key in routeFlows) 0 else 1 }
+                .thenByDescending { store.node(it.key)?.let { f -> coverage(f) } ?: 0 }
                 .thenByDescending { e -> bestFlowStepsOf(store.node(e.key)).maxOfOrNull { hits[it] ?: 0.0 } ?: 0.0 }
                 .thenBy { kindOrder.indexOf(store.node(it.key)?.attrs?.get("entryKind")) }
                 .thenByDescending { it.value },
@@ -1029,15 +1044,30 @@ class Queries(
         // the families in play: named by the question, or declared on what the chain packs
         val onSpine = (spine + spine.map { owner(it) }).distinct().mapNotNull { store.node(it) }.flatMap { Attrs.annotations(it).keys }.map { it.substringAfterLast('.') }.toSet()
         val asked = FAMILIES.filter { f -> stems.any { s -> f.words.any { w -> s.lowercase().startsWith(w) } } }
-        val families = FAMILIES.filter { f -> f in asked || f.annotations.any { it in onSpine } || f.edges.any { k -> spine.any { store.edgesFrom(it, k).isNotEmpty() } } }
+        // the exceptions the chain constructs: `throw new UsernameNotFoundException(..)` is a CALLS edge to its constructor
+        val spineThrows = spine.flatMap { b -> store.edgesFrom(b, EdgeKind.CALLS).map { it.to } }
+            .filter { it.substringAfter('#').startsWith("<init>(") && owner(it).substringAfterLast('.').endsWith("Exception") }
+            .map { owner(it) }.toSet()
+        val families = FAMILIES.filter { f -> f in asked || f.annotations.any { it in onSpine } || f.edges.any { k -> spine.any { store.edgesFrom(it, k).isNotEmpty() } } ||
+            ("exception" in f.words && spineThrows.isNotEmpty()) }
         val spineIds = (spine + spine.map { owner(it) }).toSet()
         val wiring = ArrayList<Pair<Node, String>>() // site, its annotation text
         val wiringBodies = ArrayList<String>() // the bean methods that configure the concept, packed like chain steps
+        val handlerBodies = HashSet<String>() // exception handlers for what the question names or the chain throws
         for (f in families) {
             for (ann in f.annotations) for (a in store.nodesLike(ann, 20).filter { it.id.endsWith(".$ann") }) {
                 for (e in store.edgesTo(a.id, EdgeKind.ANNOTATED_WITH)) store.node(e.from)?.takeIf { it.origin == Origin.REPO && it.attrs["test"] != "true" }?.let { site ->
                     // the question named the concept: every site. Only the chain did: the chain's own sites and the @Enable* that switches it on
                     if (f in asked || site.id in spineIds || ann.startsWith("Enable")) wiring += site to annotationText(site, a.id)
+                    // the handler that catches an exception the question names or the chain throws is the body that says what
+                    // the caller gets back; it was listed as a site and never shown, and the answer said "how it reaches the
+                    // client is not shown"
+                    if (ann == "ExceptionHandler" && site.kind == NodeKind.METHOD) {
+                        val caught = (Attrs.annotations(site)[a.id]?.values.orEmpty().flatMap { it.split(',') } + Attrs.params(site).map { it.type })
+                            .map { it.trim().removeSuffix(".class") }.filter { it.substringAfterLast('.').endsWith("Exception") }
+                        val named = caught.any { c -> val n = c.substringAfterLast('.').lowercase(); stems.any { st -> st.length >= 5 && n.contains(st.lowercase()) } }
+                        if (named || caught.any { it in spineThrows }) { wiringBodies += site.id; handlerBodies += site.id }
+                    }
                 }
             }
             // the family lists its bean types in the order they explain the concept: the filter chain declares the
@@ -1137,7 +1167,7 @@ class Queries(
             store.edgesFrom(w, EdgeKind.PROVIDES_BEAN).isNotEmpty() && store.node(w)?.let { m -> sources?.read(m, 0)?.text }
                 ?.let { Regex("""new\s+([A-Z]\w*)\s*[(<]""").find(it)?.groupValues?.get(1) }?.let { it in ownTypes } == true
         }
-        val askedFirst = (ownInstanceProviders + wiringBodies).filter { it !in spine }.distinct().filter { !listing && (spine.isEmpty() || namedWiring(it) || it in chainBeans || it in ownInstanceProviders) }
+        val askedFirst = (ownInstanceProviders + wiringBodies).filter { it !in spine }.distinct().filter { !listing && (spine.isEmpty() || namedWiring(it) || it in chainBeans || it in ownInstanceProviders || it in handlerBodies) }
         val pack = (spine.filterIndexed { i, id -> i == 0 || !trivial(id) } + askedFirst.take(WIRING_BODIES)).mapNotNull { id -> nodes[id] ?: store.node(id) }
             .filter { n -> n.file == null || (n.file !in whole && n.file !in cards) } // its file is already going, whole or as a card
             .mapNotNull { n ->
