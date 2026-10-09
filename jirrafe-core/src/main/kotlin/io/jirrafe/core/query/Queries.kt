@@ -771,8 +771,15 @@ class Queries(
         for ((word, kind) in KIND_WORDS) if (words.any { stem(it.lowercase()) == word }) {
             val rest = words.filter { stem(it.lowercase()) != word }
             if (rest.isEmpty()) bareKind = true
-            val scoped = if (rest.isEmpty()) emptyList() else
+            val found = if (rest.isEmpty()) emptyList() else
                 (find(rest.joinToString(" "), 10, setOf(kind)) + rest.flatMap { find(stem(it), 5, setOf(kind)) }).distinctBy { it.id }
+            // the one the question means: "the role fetch endpoint" found four routes on one word each and role/fetch on
+            // two. A node matching strictly more of the question's words than any other is the only one listed
+            val matched = { n: Node -> val text = (n.fqn + " " + (n.attrs["handler"] ?: "").substringAfter('#').substringBefore('(')).lowercase()
+                rest.count { r -> text.contains(stem(r.lowercase()).take(5)) } }
+            val counts = found.map { matched(it) }
+            val top = counts.maxOrNull() ?: 0
+            val scoped = if (top >= 1 && counts.count { it == top } == 1) listOf(found[counts.indexOf(top)]) else found
             // a kind the question named is the answer when the question is only about that kind ("which endpoints
             // exist"); when it is the object of a real subject ("what secures the endpoints"), an arbitrary ten of
             // them must not outrank the subject, so an unscoped listing scores below a name match
