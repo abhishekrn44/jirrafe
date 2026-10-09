@@ -993,7 +993,14 @@ class Queries(
                 val at = bestFlowSteps.indexOf(from)
                 val rest = bestFlowSteps.drop(at) + bestFlowSteps.take(at).filter { flowDepth[it] == flowDepth[from] }
                 val reps = legReps(rest).filter { it != from }
-                val ordered = (listOf(bestFlowSteps.first()) + rest.sortedBy { layerRank(it) }).distinct()
+                // a step with no body is the step it dispatches to: the repository interface's countBySearchCriteria() held
+                // a slot of the first walk and was dropped at pack time, so the implementation that builds the aggregation
+                // was never shown. A bodyless step whose one implementation is a repository fragment is replaced by it; a
+                // service interface's step is not, since its implementation is often the one-line getter the pack drops,
+                // and showing it evicted the facts the question needed
+                fun resolved(id: String): String = if (id == from || !trivial(id)) id else
+                    store.edgesTo(id, EdgeKind.OVERRIDES).map { it.from }.filter { packable(it) && layerOf(owner(it)) == "repository" && store.node(it)?.attrs?.get("test") != "true" }.singleOrNull() ?: id
+                val ordered = (listOf(bestFlowSteps.first()) + rest.sortedBy { layerRank(it) }).map(::resolved).distinct()
                     // trivial steps stay in the walk and are dropped at pack time: they keep the first walk from spending every
                     // slot on deep steps of its own flow (getCountryById, getStateById) that the second walk's bodies need
                     .filter { it == from || packable(it) }.filter { it !in reps }
