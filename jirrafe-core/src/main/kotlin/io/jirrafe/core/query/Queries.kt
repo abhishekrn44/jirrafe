@@ -95,6 +95,7 @@ class Queries(
         private val WORKFLOW = Regex("\\b(workflow|steps?|process|lifecycle|end[ -]to[ -]end)\\b")
         private const val NEAR_MISS = 0.5 // a second match scoring this fraction of the first gets its own chain; new tokens cost twelve times re-read ones
         /** Where a request goes next, by the knowledge layer's classification of the target's class. */
+        private val BEHAVIOUR_WORDS = setOf("happen", "happens", "happened", "when", "does", "handle", "handles", "handled", "return", "returns", "why", "work", "works", "after", "before", "fails", "fail")
         private val LAYER_RANK = mapOf("controller" to 0, "service" to 0, "repository" to 0, "client" to 0, "util" to 2, "config" to 2, "model" to 3)
         /** What a lead is worth by its class's layer: a helper or an entity is rarely the answer, an unlabelled class often is. */
         private val LAYER_WEIGHT = mapOf("util" to 0.7, "config" to 0.7, "model" to 0.4)
@@ -797,7 +798,10 @@ class Queries(
         // "what routes exist for authentication" is answered by the list; "how does the signin route work" by its body;
         // and "what does the search endpoint return", whose words resolve to one route, by that route's mechanism:
         // it was a listing of one, with no body, and the answer could only name the route
-        val listing = kindHits.isNotEmpty() && !question.trim().lowercase().startsWith("how") && (bareKind || kindHits.size > 1)
+        // and never a question about behaviour: "what happens when the export limit is exceeded" matched several config
+        // keys and was listed, with no body
+        val behavioural = words.any { it.lowercase() in BEHAVIOUR_WORDS }
+        val listing = kindHits.isNotEmpty() && !question.trim().lowercase().startsWith("how") && !behavioural && (bareKind || kindHits.size > 1)
         if (hits.isEmpty()) for (w in words) store.nodesLike(w, 10).filter { wantsDocs || it.kind != NodeKind.DOC }.forEach { hit(it, 0.5) }
         // a hit on wiring (route, topic, config key, bean) is really about the code attached to it
         for ((id, score) in hits.toList()) {
@@ -903,7 +907,12 @@ class Queries(
         fun leadable(n: Node) = n.kind in setOf(NodeKind.METHOD, NodeKind.CONSTRUCTOR) && n.origin != Origin.EXTERNAL && n.attrs["test"] != "true" &&
             ((n.endLine ?: 0) - (n.startLine ?: 0) >= 1 || store.node(owner(n.id))?.kind == NodeKind.INTERFACE)
         // a nested class (a Lombok builder, an inner helper) takes its enclosing class's layer
-        fun layerRank(id: String) = LAYER_RANK[(store.node(owner(id))?.attrs?.get("layer") ?: store.node(owner(id).substringBefore('$'))?.attrs?.get("layer"))] ?: 1
+        // an implementation sits in the layer of what it implements: a Spring Data custom fragment's `XRepositoryImpl`
+        // carries no @Repository, ranked 1, and lost its walk slot to every annotated step, so the Mongo query it builds
+        // was the one body the answer lacked
+        fun layerOf(cls: String): String? = store.node(cls)?.attrs?.get("layer") ?: store.node(cls.substringBefore('$'))?.attrs?.get("layer")
+            ?: (store.edgesFrom(cls, EdgeKind.IMPLEMENTS) + store.edgesFrom(cls, EdgeKind.EXTENDS)).firstNotNullOfOrNull { e -> store.node(e.to)?.attrs?.get("layer") }
+        fun layerRank(id: String) = LAYER_RANK[layerOf(owner(id))] ?: 1
         // The best few distinct matches, logic layers first: a generated builder or a DTO getter matches the question's
         // words as well as the service does. On a small application the second and third candidates are as often the
         // answer as the first ("how is a user created": the request and the approval both create one), and reading both
