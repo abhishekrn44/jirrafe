@@ -1542,6 +1542,9 @@ class Queries(
                             .filter { e -> store.node(e.to)?.origin != Origin.EXTERNAL && layerRank(e.to) < 3 && e.to != p.id }.distinctBy { it.to }
                         if (calls.isNotEmpty()) put("calls", buildJsonArray { for (e in calls.cap(6)) { val n = store.node(e.to)
                             add(JsonPrimitive("${simpleName(owner(e.to))}.${simpleName(e.to)}" + (n?.startLine?.let { ":$it" } ?: "") + (if (e.to in packed) "" else " (not shown)"))) } })
+                        // the constants the body names, with their values: `new Argon2PasswordEncoder(Constants.SALT, ..)` in a
+                        // bean body said which parameters and not what they are, and every model spent a call on Constants.java
+                        constantsOf(p.text, listOf(p.id)).takeIf { it.isNotEmpty() }?.let { cs -> put("constants", buildJsonArray { for (x in cs) add(JsonPrimitive(x)) }) }
                         put("text", p.text); if (p.truncated) put("truncated", true)
                     })
                 })
@@ -1781,6 +1784,27 @@ class Queries(
      * it was built with, the repository it was given, live here and nowhere a body shows. Read from the source
      * when a reader is at hand (the initialiser is the fact), the signature otherwise; constants and loggers left out.
      */
+    /**
+     * The values of the constants [text] names, read through the [READS_FIELD] edges of [readers]: `new
+     * Argon2PasswordEncoder(Constants.SALT, Constants.HASH_LENGTH, ...)` says which parameters, not what they are, and every
+     * model that was asked "what algorithm and parameters" spent a call on Constants.java for five integers.
+     */
+    private fun withConstants(text: String, readers: List<String>): String {
+        val values = constantsOf(text, readers)
+        return if (values.isEmpty()) text else "$text (${values.joinToString(", ")})"
+    }
+
+    /** `Constants.SALT = 16`, one per static field of the repo that [readers] read and [text] names. */
+    private fun constantsOf(text: String, readers: List<String>): List<String> =
+        readers.flatMap { store.edgesFrom(it, EdgeKind.READS_FIELD) }.map { it.to }.distinct()
+            .mapNotNull { store.node(it) }
+            // a logger is a constant too, and its value says nothing
+            .filter { f -> val t = f.signature.orEmpty().substringAfter(": ", ""); !(t.endsWith("Logger") || t.endsWith(".Log") || f.id.substringAfterLast('#').lowercase() in setOf("log", "logger")) }
+            .filter { f -> f.kind == NodeKind.FIELD && f.origin == Origin.REPO && "static" in f.signature.orEmpty() && Regex("\\b" + Regex.escape(f.id.substringAfterLast('#')) + "\\b").containsMatchIn(text) }
+            .mapNotNull { f -> sources?.read(f, 0)?.text?.lines()?.firstOrNull { '=' in it }?.substringAfter('=')?.substringBefore(';')?.trim()?.takeIf { it.isNotEmpty() && it.length <= 60 }
+                ?.let { v -> "${simpleName(owner(f.id))}.${f.id.substringAfterLast('#')} = $v" } }
+            .take(8)
+
     private fun fieldsOf(classId: String, usedIn: String, decisiveOnly: Boolean = false): List<String> {
         val c = store.node(classId) ?: return emptyList()
         if (c.kind !in CODE || c.origin == Origin.EXTERNAL) return emptyList()
@@ -1793,14 +1817,15 @@ class Queries(
         val provided = store.edgesFrom(classId, EdgeKind.INJECTS).mapNotNull { e ->
             val bean = store.node(e.to) ?: return@mapNotNull null
             val prov = bean.attrs["provider"]?.let { store.node(it) }?.takeIf { it.kind == NodeKind.METHOD } ?: return@mapNotNull null
-            val ret = sources?.read(prov, 0)?.text?.lines()?.map { it.trim() }?.lastOrNull { it.startsWith("return ") }?.removePrefix("return ")?.trimEnd(';')?.take(120)
+            val ret = sources?.read(prov, 0)?.text?.lines()?.map { it.trim() }?.lastOrNull { it.startsWith("return ") }?.removePrefix("return ")?.trimEnd(';')?.take(120)?.let { withConstants(it, listOf(prov.id)) }
             (bean.attrs["type"] ?: return@mapNotNull null) to
                 "<- @Bean ${simpleName(owner(prov.id))}#${simpleName(prov.id)}()" + (ret?.let { " returns $it" } ?: "") + (at(prov)?.let { " @ $it" } ?: "")
         }.toMap()
         return fields.take(FIELDS_MAX).mapNotNull { f ->
             val ann = Attrs.annotations(f).keys.filter { !it.startsWith("java.lang.") && !it.startsWith("lombok.") }.joinToString(" ") { annotationText(f, it) }
-            val text = sources?.read(f, 0)?.text?.lines()?.map { it.trim() }?.filter { it.isNotEmpty() && !it.startsWith("@") }?.joinToString(" ")?.trimEnd(';')?.take(200)
-                ?: f.signature?.replace(PACKAGE, "") ?: f.id.substringAfterLast('#')
+            val text = (sources?.read(f, 0)?.text?.lines()?.map { it.trim() }?.filter { it.isNotEmpty() && !it.startsWith("@") }?.joinToString(" ")?.trimEnd(';')?.take(200)
+                ?: f.signature?.replace(PACKAGE, "") ?: f.id.substringAfterLast('#'))
+                .let { if ('=' in it) withConstants(it, listOf(classId, "$classId#<init>()")) else it } // an initialiser's constants, with their values
             val bean = provided[f.signature?.substringAfter(": ", "")?.substringBefore('<')?.trim()]
             // decisive: an initialiser, a provider, or a value-binding annotation; a bare injection is already visible in the body's calls
             if (decisiveOnly && bean == null && '=' !in text && ann.split(' ').none { it.isNotEmpty() && it != "@Autowired" && it != "@Inject" }) return@mapNotNull null

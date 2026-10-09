@@ -105,6 +105,7 @@ object Render {
         appendLine()
         p["class"]?.let { appendLine("in " + it.jsonPrimitive.content) }
         p["fields"]?.jsonArray?.takeIf { it.isNotEmpty() }?.let { fs -> appendLine("fields: " + fs.joinToString("; ") { it.jsonPrimitive.content }) }
+        p["constants"]?.jsonArray?.takeIf { it.isNotEmpty() }?.let { cs -> appendLine("constants: " + cs.joinToString(", ") { it.jsonPrimitive.content }) }
         val width = end.toString().length
         for ((i, l) in lines.withIndex()) appendLine((start + i).toString().padStart(width) + "  " + l)
         if (p["truncated"] != null) appendLine("... cut at line $end; `source ${p.str("id")} --lines ${end + 1}-${end + 120}` continues it")
