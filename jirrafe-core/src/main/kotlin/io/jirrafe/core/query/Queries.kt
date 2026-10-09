@@ -106,6 +106,17 @@ class Queries(
     }
 
     /** Builds with shrinking list limits until the answer fits [budget] tokens. */
+    /**
+     * explain's fit. The sections a cut drops first (the facts beyond three, data, config, wiring) are the cheap ones
+     * and the ones a reader goes back for, so an answer cut below level five is built once more at twice the budget
+     * before it is shown: one call, about two thousand tokens more on the one question in nine it touches, instead
+     * of a second turn the model was told to take and, rightly or wrongly, declined.
+     */
+    private fun fitExplain(budget: Int, build: (limit: Int) -> JsonObject): JsonObject {
+        val first = fit(budget, build)
+        return if (first["omitted"] != null && budget == DEFAULT_BUDGET) fit(budget * 2, build) else first // an explicit budget is honoured as given
+    }
+
     private fun fit(budget: Int, build: (limit: Int) -> JsonObject): JsonObject {
         var last: JsonObject? = null
         for (limit in LIMITS) {
@@ -1473,7 +1484,7 @@ class Queries(
         // What an agent measurably uses, in order: the first flow's steps and their file:line, the top nodes and their
         // edge lists (28 of 49 follow-up ids came only from edges), then docs, then later flows, then communities
         // (0 of 66 answers cited one). Shrinking follows the reverse order; nothing here duplicates anything else.
-        return fit(budget) { l ->
+        return fitExplain(budget) { l ->
             buildJsonObject {
                 put("question", question)
                 stale()?.let { put("stale", it) }
