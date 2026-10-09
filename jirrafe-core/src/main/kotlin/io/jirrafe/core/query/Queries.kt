@@ -883,9 +883,12 @@ class Queries(
         // when it scores at least half the best hit of all, pins its handler's flow to the top
         // Only when the question speaks of a route: "a candidate applies for a job" also hits `GET /apply`, and pinning
         // that handed the answer to findAll. A verb in the question picks between routes on one path
-        val routeWords = setOf("endpoint", "endpoints", "route", "routes", "api", "url", "get", "post", "put", "delete", "patch")
+        // the verb alone is prose: "what does the client get" pinned /health. A route word names the route, and the
+        // route hit must be near the best hit of all, not an arbitrary one from the kind listing
+        val routeWords = setOf("endpoint", "endpoints", "route", "routes", "api", "url", "path", "request")
         val asksRoute = words.any { it.lowercase() in routeWords }
-        val routeFlows = if (!asksRoute) emptySet() else hits.entries.filter { nodes[it.key]?.kind == NodeKind.HTTP_ROUTE }
+        val bestHit = hits.values.maxOrNull() ?: 0.0
+        val routeFlows = if (!asksRoute) emptySet() else hits.entries.filter { nodes[it.key]?.kind == NodeKind.HTTP_ROUTE && it.value >= bestHit / 2 }
             .sortedWith(compareByDescending<Map.Entry<String, Double>> { e -> if (words.any { it.equals(nodes[e.key]?.attrs?.get("verb"), ignoreCase = true) }) 1 else 0 }.thenByDescending { it.value })
             .firstOrNull()?.let { e -> nodes[e.key]?.attrs?.get("handler")?.let { setOf("flow:$it") } }.orEmpty()
         val rankedFlows = flows.entries.sortedWith(
