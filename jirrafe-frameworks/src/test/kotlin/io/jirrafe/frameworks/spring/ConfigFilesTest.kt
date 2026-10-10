@@ -31,7 +31,8 @@ class ConfigFilesTest {
         assertEquals("8080" to 2, yml["server.port"])
         assertEquals("true" to 4, yml["server.ssl.enabled"])
         assertEquals("x" to 11, yml["name"])
-        assertEquals(setOf("server.port", "server.ssl.enabled", "spring.profiles", "name"), yml.keys)
+        assertEquals("[a, b]" to 6, yml["list"], "a sequence is one value under its key")
+        assertEquals(setOf("server.port", "server.ssl.enabled", "list", "spring.profiles", "name"), yml.keys)
 
         val props = ConfigFiles.read(files[0])
         assertEquals("prod", props[0].profile)

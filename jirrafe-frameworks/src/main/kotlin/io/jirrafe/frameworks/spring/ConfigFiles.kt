@@ -39,16 +39,26 @@ object ConfigFiles {
     private fun yaml(lines: List<String>, file: Path, profile: String?): List<ConfigEntry> {
         val out = ArrayList<ConfigEntry>()
         val stack = ArrayList<Pair<Int, String>>() // indent -> key
+        // a sequence is one value under its key: `retry-exceptions: [IOException, TimeoutException]`, as Spring binds
+        // it; the items were dropped, and a question about what is retried had to open the file
+        var list: Triple<String, Int, Int>? = null // key, line, indent of its items
+        val items = ArrayList<String>()
+        fun flush() { list?.let { (k, ln, _) -> out += ConfigEntry(k, items.joinToString(", ", "[", "]"), file, ln, profile) }; list = null; items.clear() }
         lines.forEachIndexed { i, raw ->
             val line = raw.substringBefore(" #").trimEnd()
             if (line.isBlank() || line.trimStart().startsWith("#")) return@forEachIndexed
             if (line.trim() == "---") {
-                stack.clear()
+                flush(); stack.clear()
                 return@forEachIndexed
             }
             val indent = line.length - line.trimStart().length
             val body = line.trim()
-            if (body.startsWith("- ")) return@forEachIndexed
+            if (body.startsWith("- ")) {
+                if (list == null) { val k = stack.joinToString(".") { it.second }; if (k.isEmpty()) return@forEachIndexed; list = Triple(k, i + 1, indent) }
+                if (list!!.third == indent) items += body.removePrefix("- ").trim().trim('"', '\'')
+                return@forEachIndexed
+            }
+            if (list != null && indent <= list!!.third) flush()
             val colon = body.indexOf(':')
             if (colon <= 0) return@forEachIndexed
             val key = body.substring(0, colon).trim().trim('"', '\'')
@@ -61,6 +71,7 @@ object ConfigFiles {
                 out += ConfigEntry(full, value.trim('"', '\''), file, i + 1, profile)
             }
         }
+        flush()
         return out
     }
 }
