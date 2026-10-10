@@ -1212,7 +1212,10 @@ class Queries(
         val helperOwners = pack.map { owner(it.id) }.toSet()
         fun privateHelpers(of: List<String>, seen: Set<String>): List<Node> = of.flatMap { b -> cleanEdges(b, store.edgesFrom(b).filter { it.kind == EdgeKind.CALLS }) { it.to }.map { it.to } }.distinct()
             .filter { id -> id !in seen && owner(id) in helperOwners }
-            .mapNotNull { id -> store.node(id)?.takeIf { it.kind == NodeKind.METHOD && "lombok.Generated" !in (it.attrs["annotations"] ?: "") && ((it.endLine ?: 0) - (it.startLine ?: 0)) in 1..HELPER_LINES } }
+            // a helper whose body says a question word is the mechanism whatever its length: buildDocument, 36 lines,
+            // holds the Decimal128 match key the question asked about, and the cap left it as an id in `calls:`
+            .mapNotNull { id -> store.node(id)?.takeIf { it.kind == NodeKind.METHOD && "lombok.Generated" !in (it.attrs["annotations"] ?: "") && ((it.endLine ?: 0) - (it.startLine ?: 0)).let { len ->
+                len in 1..HELPER_LINES || (len <= HELPER_LINES * 3 && sources?.read(it, 0)?.text?.let { t -> stems.any { st -> st.length >= 5 && t.contains(st, ignoreCase = true) } } == true) } } }
         val packedIds = pack.map { it.id }
         // the chain's bodies first, then the wiring bodies: a bean method's own callee (kafkaTemplate -> producerFactory)
         // took the slot of the chain's sendJob, which is the send the question is about
