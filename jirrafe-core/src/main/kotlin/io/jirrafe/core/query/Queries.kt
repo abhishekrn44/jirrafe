@@ -225,6 +225,18 @@ class Queries(
             .filter { m -> shortName(m) == want || ('(' !in want && shortName(m).substringBefore('(') == want) }
     } else emptyList()
 
+    /**
+     * An id that is nowhere in the graph: a type of a dependency jar is not indexed, and the agent that was told only
+     * "no node" searched for it twice more before giving up. The package decides: no indexed code in it means the
+     * type is outside this project.
+     */
+    private fun unknown(id: String): String {
+        val cls = owner(id).substringBefore('$')
+        val pkg = cls.substringBeforeLast('.', "")
+        val indexed = pkg.isEmpty() || store.node(pkg) != null || store.nodes(NodeKind.CLASS).any { it.origin == Origin.REPO && it.id.startsWith("$pkg.") }
+        return if (indexed) "no node '$id'; try search" else "no node '$id': package $pkg has no indexed code, so this is a type of a dependency, not of this project; its source is not in the graph, stop looking for it here"
+    }
+
     /** A bare member name that matches several overloads is not a guess to make on the agent's behalf. */
     private fun ambiguous(id: String, all: List<Node>): JsonObject? = if (all.size > 1 && '(' !in id) buildJsonObject {
         put("error", "'$id' matches ${all.size} members; pick one")
@@ -338,7 +350,7 @@ class Queries(
     fun getNode(id: String, includeSource: Boolean = false, budget: Int = DEFAULT_BUDGET): JsonObject {
         val all = resolveAll(id)
         ambiguous(id, all)?.let { return it }
-        val n = all.firstOrNull() ?: return error("no node '$id'; try search")
+        val n = all.firstOrNull() ?: return error(unknown(id))
         val id = n.id
         memory?.log("node", id)
         val out = store.edgesFrom(id).filter { it.kind !in STRUCTURE }
