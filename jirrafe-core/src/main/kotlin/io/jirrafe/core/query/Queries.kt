@@ -1453,8 +1453,11 @@ class Queries(
         // question names comes first, a dead member of a packed class next, a dead neighbour last and only one
         val scopeOwners = packAll.map { owner(it.id).substringBefore('$') }.toSet()
         val namedDead = stems.filter { it.length >= 4 }.flatMap { st -> store.nodesLike(st.take(5), 20, CODE).map { it.id }.filter { simpleName(it).lowercase().contains(st.lowercase().take(5)) } }.toSet()
+        // a neighbour only when a question word names it: "HealthResponse.status has no callers outside its tests" rode
+        // on a question about a Mongo query because the two classes share a package
         val neighbours = scopeOwners.map { it.substringBeforeLast('.', "") }.filter { it.isNotEmpty() }.toSet()
-            .flatMap { p -> store.edgesFrom(p, EdgeKind.CONTAINS).map { it.to } }.filter { store.node(it)?.kind in CODE }.toSet()
+            .flatMap { p -> store.edgesFrom(p, EdgeKind.CONTAINS).map { it.to } }.filter { store.node(it)?.kind in CODE }
+            .filter { c -> stems.any { st -> st.length >= 4 && c.substringAfterLast('.').lowercase().contains(st.lowercase().take(5)) } }.toSet()
         val absences = (namedDead + scopeOwners + neighbours).flatMap { c -> listOf(c) + store.edgesFrom(c, EdgeKind.CONTAINS).map { it.to } }.distinct()
             .flatMap { id -> store.edgesFrom(id, EdgeKind.HAS_FINDING).mapNotNull { store.node(it.to) }.filter { it.attrs["kind"] == "dead-code" }.map { f -> id to f } }
             .distinctBy { it.second.id }
