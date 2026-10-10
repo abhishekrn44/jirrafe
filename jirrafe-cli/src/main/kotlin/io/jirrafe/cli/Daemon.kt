@@ -44,7 +44,10 @@ object Daemon {
     fun answer(root: Path, out: Path, store: GraphStore, r: Request): Answer {
         val config = Config.load(root)
         val manifest = out.resolve("manifest.json").takeIf { it.exists() }?.let { Manifest.read(it) }
-        val b = r.budget ?: config.int("serve.default_token_budget", Queries.DEFAULT_BUDGET)
+        // the serve setting sizes MCP answers; a CLI answer without --token-budget is the default, so explain's second
+        // build at twice the budget fires. With the setting here (3000 in a project's toml) it never did, and the
+        // answer collapsed to its smallest level and said `omitted`
+        val b = r.budget ?: Queries.DEFAULT_BUDGET
         val sources = Sources(out, manifest, allowPublic = r.licenses, decompile = config.string("deps.decompile", "internal-only") != "never")
         val q = Queries(store, store.meta("root") ?: root.toString(), manifest, sources, Memory(out.resolve("queries.jsonl")))
         val text = r.texts.firstOrNull()
