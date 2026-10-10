@@ -246,4 +246,12 @@ class QueriesTest {
         val text = Render.explain(q.explain("how does findAll list orders"))
         assertContains(text, "OrderRepository.findAll is declared without a body or @Query, so Spring Data derives the query from its name:  // source of a.OrderRepository#findAll()  @ src/a/OrderRepository.java:10")
     }
+
+    @Test
+    fun `a method id printed without its package resolves to the member`() {
+        assertEquals("a.OrderService#open()", q.getNode("OrderService#open()").str("id"))
+        val text = Render.explain(q.explain("how are orders opened"))
+        assertContains(text, "  - Util1#f()  @ src/b/Util1.java:10", message = "flow steps print the short id")
+        assertContains(text, "  a.OrderService#open()", message = "the body header keeps the full id")
+    }
 }

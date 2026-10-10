@@ -204,6 +204,7 @@ class Queries(
     private fun ref(id: String): JsonObject = store.node(id)?.let { ref(it) } ?: buildJsonObject { put("id", id) }
 
     private val PACKAGE = Regex("""\b[a-z][a-z0-9_]*\.""")
+    private val TYPES = listOf(NodeKind.CLASS, NodeKind.INTERFACE, NodeKind.ENUM, NodeKind.RECORD)
 
     /** Member name with simple-name parameters, as the outline prints it: `save(Owner)` for `save(org.x.Owner)`. */
     private fun shortName(m: Node) = m.id.substringAfter('#').replace(PACKAGE, "")
@@ -221,7 +222,12 @@ class Queries(
     /** Every member an id denotes: `a.Foo#save` is all overloads of save, `a.Foo#save(Owner)` one of them. */
     private fun resolveAll(id: String): List<Node> = store.node(id)?.let { listOf(it) } ?: if ('#' in id) {
         val want = id.substringAfter('#').replace(" ", "")
-        store.edgesFrom(owner(id), EdgeKind.CONTAINS).mapNotNull { store.node(it.to) }
+        // the owner as the answer printed it: `OrderService#open()` names every class called OrderService, and a member
+        // of each that matches; two of them are candidates, not a guess
+        val cls = owner(id)
+        val owners = if (store.node(cls) != null || '.' in cls) listOf(cls)
+            else TYPES.flatMap { k -> store.nodes(k) }.filter { it.id.substringAfterLast('.') == cls }.map { it.id }
+        owners.flatMap { o -> store.edgesFrom(o, EdgeKind.CONTAINS).mapNotNull { store.node(it.to) } }
             .filter { m -> shortName(m) == want || ('(' !in want && shortName(m).substringBefore('(') == want) }
     } else emptyList()
 
@@ -238,7 +244,7 @@ class Queries(
     }
 
     /** A bare member name that matches several overloads is not a guess to make on the agent's behalf. */
-    private fun ambiguous(id: String, all: List<Node>): JsonObject? = if (all.size > 1 && '(' !in id) buildJsonObject {
+    private fun ambiguous(id: String, all: List<Node>): JsonObject? = if (all.size > 1 && ('(' !in id || '.' !in owner(id))) buildJsonObject {
         put("error", "'$id' matches ${all.size} members; pick one")
         put("candidates", buildJsonArray { for (n in all) add(buildJsonObject { put("id", n.id); at(n)?.let { put("at", it) }; n.signature?.let { put("signature", it) } }) })
     } else null

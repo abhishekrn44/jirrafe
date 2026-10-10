@@ -30,7 +30,7 @@ object Render {
                 if (f["derived"] != null) append("; derived from the best match, this project has no entry point to precompute a flow from")
                 if (entry != id) append("  [$id]")
                 appendLine()
-                for (s in f["steps"]?.jsonArray.orEmpty().map { it.jsonObject }) appendLine("  - " + s.str("id") + (s["at"]?.let { "  @ " + it.jsonPrimitive.content } ?: ""))
+                for (s in f["steps"]?.jsonArray.orEmpty().map { it.jsonObject }) appendLine("  - " + short(s.str("id")) + (s["at"]?.let { "  @ " + it.jsonPrimitive.content } ?: ""))
             }
         }
         for (f in o["files"]?.jsonArray.orEmpty().map { it.jsonObject }) {
@@ -64,13 +64,24 @@ object Render {
         o["dependencies"]?.jsonArray?.takeIf { it.isNotEmpty() }?.let { d -> appendLine(); appendLine("dependencies: " + d.joinToString(", ") { it.jsonPrimitive.content }) }
         o["vocabulary"]?.jsonArray?.takeIf { it.isNotEmpty() }?.let { v -> appendLine(); appendLine("vocabulary (the code's own words nearest this question; ask again with the ones that fit): " + v.joinToString(", ") { it.jsonPrimitive.content }) }
         section(o["nodes"], if (pack.isNotEmpty()) "other matches" else "matches") { n ->
-            "- " + n.str("id") + (n["at"]?.let { "  @ " + it.jsonPrimitive.content } ?: "") + (n["signature"]?.let { "  " + it.jsonPrimitive.content } ?: "") +
+            "- " + short(n.str("id")) + (n["at"]?.let { "  @ " + it.jsonPrimitive.content } ?: "") + (n["signature"]?.let { "  " + it.jsonPrimitive.content } ?: "") +
                 (n["doc"]?.let { "  ; " + it.jsonPrimitive.content } ?: "") +
-                (n["uses"]?.jsonArray?.takeIf { it.isNotEmpty() }?.let { u -> "\n  uses: " + u.joinToString(", ") { it.jsonObject.str("id") } } ?: "") +
-                (n["usedBy"]?.jsonArray?.takeIf { it.isNotEmpty() }?.let { u -> "\n  used by: " + u.joinToString(", ") { it.jsonObject.str("id") } } ?: "")
+                (n["uses"]?.jsonArray?.takeIf { it.isNotEmpty() }?.let { u -> "\n  uses: " + u.joinToString(", ") { short(it.jsonObject.str("id")) } } ?: "") +
+                (n["usedBy"]?.jsonArray?.takeIf { it.isNotEmpty() }?.let { u -> "\n  used by: " + u.joinToString(", ") { short(it.jsonObject.str("id")) } } ?: "")
         }
         section(o["communities"], "communities") { c -> "- " + c.str("label") + "  [" + c.str("id") + "]" + (c["summary"]?.let { ": " + it.jsonPrimitive.content } ?: "") }
     }
+
+    private val PACKAGE = Regex("""\b[a-z][a-z0-9_]*\.""")
+
+    /**
+     * A method id without its packages: `OdsGraphqlClient#fetch(GraphQlVariable)` for the hundred and fifty characters
+     * of the full one. Flow steps, matches and their edge lists are read every turn and were a fifth of the answer on
+     * a project with long package names; the body headers keep the full id, and a short id pasted back resolves
+     * (the class by its simple name, the member by its simple parameters). A class id stays whole: it is short, and
+     * it is what `node` is asked for.
+     */
+    private fun short(id: String): String = if ('#' in id) id.replace(PACKAGE, "") else id
 
     /** `- id  @ file:line  signature`, one per line: a list to pick an id from, not a JSON document to parse. */
     fun search(o: JsonObject): String = buildString {
