@@ -123,7 +123,9 @@ class Queries(
         for (limit in LIMITS) {
             val o = build(limit)
             if (System.getenv("JIRRAFE_DEBUG") == "1") System.err.println("debug: fit level=$limit tokens=${tokens(o)} budget=$budget")
-            if (tokens(o) <= budget) return o
+            // a level a tenth over the budget is kept: the next one down is half the size, and an answer of 3118
+            // tokens against 3000 lost its bodies for the sake of 118
+            if (tokens(o) <= budget + budget / 10) return o
             last = o
         }
         return last!!
