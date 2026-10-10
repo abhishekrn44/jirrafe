@@ -32,6 +32,8 @@ max_answer_chars = 0                  # when > 0, a rendered answer longer than 
 
 | key | used by | notes |
 |---|---|---|
+| `serve.default_token_budget` | `serve` (MCP) | the size of an MCP answer in tokens; `jirrafe query` answers default to 4500 and `--token-budget` overrides |
+| `serve.max_answer_chars` | `jirrafe query` | 0 = no limit; when set, an answer rendered longer than this is rebuilt at a smaller budget until it fits, for an agent that drops tool outputs over a size (14000 for a 16 KB limit) |
 | `deps.internal_jar_patterns` | `build` (resolve) | applied to the manifest after the build plugin wrote it; a file dependency without coordinates becomes `file:<jar name>:local` |
 | `deps.internal_group_prefixes` | the build plugins | Gradle also accepts `-Pjirrafe.internalGroupPrefixes=a,b`; the default is every group of the project's own modules |
 | `docs.skip_dirs` | `build` | directories or file names left out of Markdown doc extraction, in addition to the default `.git .jirrafe .claude .idea .vscode build target node_modules out` |

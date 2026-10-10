@@ -69,7 +69,8 @@ class Config private constructor(private val values: Map<String, String>, privat
             |
             |[serve]
             |transport = "stdio"                   # stdio | http
-            |default_token_budget = 3000
+            |default_token_budget = 3000           # MCP answers; `jirrafe query` answers default to 4500 and --token-budget overrides
+            |max_answer_chars = 0                  # 0 = no limit; set 14000 if your agent drops tool outputs over 16 KB (`jirrafe query` answers are rebuilt smaller to fit)
             |""".trimMargin()
     }
 }
