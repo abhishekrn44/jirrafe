@@ -25,6 +25,7 @@ send_code_snippets = false            # when true, the entry method's source and
 [serve]
 transport = "stdio"                   # stdio | http
 default_token_budget = 3000
+max_answer_chars = 0                  # when > 0, a rendered answer longer than this is rebuilt smaller (a client that drops outputs over 16 KB wants 14000)
 ```
 
 ## Where the values come from

@@ -54,7 +54,7 @@ object Daemon {
         val needs = setOf("explain", "search", "node", "source", "impact", "flow", "neighbors")
         if (text == null && r.tool in needs && !(r.tool == "impact" && r.diff)) return Answer("", "`${r.tool}` needs an argument")
         fun need(): String = text!!
-        val result: JsonObject = when (r.tool) {
+        fun compute(b: Int): JsonObject? = when (r.tool) {
             "explain" -> q.explain(need(), b)
             "search" -> q.search(need(), budget = b)
             "node" -> q.getNode(need(), r.source, b)
@@ -74,17 +74,24 @@ object Daemon {
             "communities" -> q.communities(text, b)
             "dependencies" -> q.dependencies(text, b)
             "overview" -> q.overview(b)
-            else -> return Answer("", "unknown query `${r.tool}`")
+            else -> null
         }
         // the answer an agent reads is code with line numbers, not code inside JSON strings; JSON on request
-        val rendered = when {
+        fun render(result: JsonObject): String = when {
             r.format == "json" -> null
             r.tool == "explain" -> Render.explain(result)
             r.tool == "source" -> Render.sources(result)
             r.tool == "search" -> Render.search(result)
             else -> null
-        }
-        return Answer(rendered ?: Queries.json.encodeToString(JsonObject.serializer(), result))
+        } ?: Queries.json.encodeToString(JsonObject.serializer(), result)
+        var result = compute(b) ?: return Answer("", "unknown query `${r.tool}`")
+        var rendered = render(result)
+        // a client that drops a tool output over a size (16 KB in one CLI) gets a smaller answer, not none: the token
+        // estimate is characters over four and Java ids run nearer three, so the budget shrinks until the text fits
+        val max = config.int("serve.max_answer_chars", 0)
+        var bb = b
+        while (max > 0 && rendered.length > max && bb > 500) { bb = bb * 3 / 4; result = compute(bb)!!; rendered = render(result) }
+        return Answer(rendered)
     }
 
     // ---- client side ------------------------------------------------------------------------------
