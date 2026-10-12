@@ -1214,7 +1214,11 @@ class Queries(
                 ?.let { Regex("""new\s+([A-Z]\w*)\s*[(<]""").find(it)?.groupValues?.get(1) }?.let { it in ownTypes } == true
         }
         val askedFirst = (ownInstanceProviders + wiringBodies).filter { it !in spine }.distinct().filter { !listing && (spine.isEmpty() || namedWiring(it) || it in chainBeans || it in ownInstanceProviders || it in handlerBodies) }
-        val pack = (spine.filterIndexed { i, id -> i == 0 || !trivial(id) } + askedFirst.take(WIRING_BODIES)).mapNotNull { id -> nodes[id] ?: store.node(id) }
+        // the entry's body is the route's annotations and a delegation, two or three thousand characters in every answer.
+        // When the question does not ask about the endpoint it rides as the flow's name, its call-site and outcome facts
+        // and its wiring lines, not as a body; the lead itself, and a question with a route word, keep it
+        val entryOut = spine.firstOrNull()?.takeIf { e -> !asksRoute && e != lead && store.edgesFrom(e, EdgeKind.HANDLES_ROUTE).isNotEmpty() }
+        val pack = (spine.filterIndexed { i, id -> id != entryOut && (i == 0 || !trivial(id)) } + askedFirst.take(WIRING_BODIES)).mapNotNull { id -> nodes[id] ?: store.node(id) }
             .filter { n -> n.file == null || (n.file !in whole && n.file !in cards) } // its file is already going, whole or as a card
             .mapNotNull { n ->
             sources?.read(n, 0)?.let { s ->
