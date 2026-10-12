@@ -781,10 +781,13 @@ class Queries(
             // method, "user" is on everything. The flows already score a rare word three times; so does a body
             // rare counted over code: the routes and the README that carry "admin" all point at the same method
             fun rare(found: List<Node>) = if (found.count { it.kind in CODE || it.kind == NodeKind.METHOD || it.kind == NodeKind.CONSTRUCTOR } <= 2) 3.0 else 1.0
-            val found = find(w, 15); val r = rare(found)
+            // and a word much of the code carries ("response", "user", "get") says little about which thing is meant:
+            // its first match scored like a rare word's, and a HealthResponse DTO led a question about an export response
+            fun common(found: List<Node>) = if (found.count { it.kind in CODE || it.kind == NodeKind.METHOD || it.kind == NodeKind.CONSTRUCTOR } >= 12) 0.5 else 1.0
+            val found = find(w, 15); val r = rare(found) * common(found)
             found.forEachIndexed { i, n -> hit(n, r / (i + 1)) }
             val stem = stem(w)
-            if (stem != w) find(stem, 15).let { f -> val rs = rare(f); f.forEachIndexed { i, n -> hit(n, 0.8 * rs / (i + 1)) } }
+            if (stem != w) find(stem, 15).let { f -> val rs = rare(f) * common(f); f.forEachIndexed { i, n -> hit(n, 0.8 * rs / (i + 1)) } }
         }
         // "which routes ...", "what topics ...": the question names a kind, so list that kind (filtered by the other words)
         val kindHits = ArrayList<Node>() // the kind the question named: these lead the matches whatever a name scored
