@@ -1368,6 +1368,9 @@ class Queries(
                         if (exits.size > 1) callerFacts += "${simpleName(owner(c))}.${simpleName(c)} exits:  " + exits.joinToString(" ... ") { (k, l) -> l.trim() + " [:${src.startLine + k}]" } to "${relative(src.file)}:${src.startLine + exits.first().index}"
                     }
                 }
+                // the entry left out of the pack answers for itself: the 201 with the token map is three lines below
+                // the call, and without the body the answer said what signin does with the token is not shown
+                if (store.node(owner(c))?.attrs?.get("layer") == "controller") handlerOutcome(caller, simpleName(t))?.let { callerFacts += "${simpleName(owner(c))}.${simpleName(c)} answers with:  ${it.first}" to it.second }
             }
             // what the endpoint does with that caller's result: createNewUser returns null for a taken name, and the
             // 400 "User Already Exists" is in AuthController, one hop up, where no answer built on the payload found it
