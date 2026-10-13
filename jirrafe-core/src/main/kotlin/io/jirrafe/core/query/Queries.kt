@@ -48,6 +48,9 @@ class Queries(
         private const val PACK_MAX = 6 // bodies in one answer
         private const val HELPERS = 3 // same-class private helpers appended to the bodies
         private const val HELPER_LINES = 25
+        private const val COVER_CANDIDATES = 12 // the name matches whose bodies are read for the question's words
+        private const val COVER_WEIGHT = 0.5 // per distinct question word a body says: below a name score, so it orders near-ties and buys nothing
+        private const val COVER_MAX = 4 // words counted at most
         private const val PER_CLASS = 2 // bodies of one class in a walk, besides the lead and the entry
         private const val ANCESTORS = 2 // callers between the flow's entry and a deep lead, packed above it
         private const val FACTS = 12 // evidence lines: at eight, the derived query and the chained call site pushed the outcome off; at ten, a side caller's two lines pushed the 400 and the 409 off
@@ -891,11 +894,13 @@ class Queries(
         }
         // what earlier sessions fetched after asking the same thing comes first, body included: the second call
         // of last time is the first answer of this time
+        val remembered = ArrayList<String>()
+        val topBeforeCover = hits.values.maxOrNull() ?: 1.0
         memory?.let { mem ->
-            val remembered = mem.recall(terms(question), ::terms)
-            val top = hits.values.maxOrNull() ?: 1.0
+            remembered += mem.recall(terms(question), ::terms).filter { store.node(it) != null }
+            val top = topBeforeCover
             // just under the best match, never above it: what was read last time is a candidate, not the answer to this question
-            remembered.forEachIndexed { i, id -> if (store.node(id) != null) hits.merge(id, top * (0.9 - i * 0.1), Double::plus) }
+            remembered.forEachIndexed { i, id -> hits.merge(id, top * (0.9 - i * 0.1), Double::plus) }
             mem.log("explain", question)
         }
         val nodes = hits.keys.mapNotNull { store.node(it) }.associateBy { it.id }.toMutableMap()
@@ -963,6 +968,32 @@ class Queries(
                 .thenBy { kindOrder.indexOf(store.node(it.key)?.attrs?.get("entryKind")) }
                 .thenByDescending { it.value },
         )
+        // A name is one or two words and a question is six: among the methods a name matched, the one whose body says
+        // the question's other words is the one meant. writeDataRows led "what happens when the export limit is
+        // exceeded" on "rows" while exportData, whose body says export, exceeded, limit and exception, trailed it. The
+        // bodies of the best name matches are read once and each distinct question word in one adds half a point: enough
+        // to order near-ties, below any name score, so it never buys a lead or a second walk (the cutoff below reads the
+        // score before the bonus). Not when a flow already covers two of the question's words, which the flow decides;
+        // not for a flow step no name matched, and not for a word most of those bodies share
+        val nameScore = HashMap(hits)
+        run {
+            val top = rankedFlows.firstOrNull()?.let { store.node(it.key) }
+            val covered = top?.let { f -> val tokens = flowTokens[f] ?: emptySet(); stems.count { st -> matches(tokens, st.lowercase()) && (stemFlows[st] ?: 0) <= maxOf(2, flowTokens.size / 2) } } ?: 0
+            if (covered < 2) {
+                val coverIds = hits.entries.filter { e -> e.value > 0 && nodes[e.key]?.let { n -> (n.kind == NodeKind.METHOD || n.kind == NodeKind.CONSTRUCTOR) && n.origin == Origin.REPO && n.attrs["test"] != "true" && n.attrs["generated"] != "true" } == true }
+                    .sortedByDescending { it.value }.take(COVER_CANDIDATES).map { it.key }
+                val texts = coverIds.mapNotNull { id -> store.node(id)?.let { n -> sources?.read(n, 0)?.text?.lowercase()?.let { id to it } } }
+                val coverStems = stems.map { it.lowercase() }.filter { it.length >= 4 }.distinct()
+                val shared = if (texts.size >= 4) coverStems.filter { st -> texts.count { (_, t) -> st in t } > texts.size / 2 }.toSet() else emptySet()
+                for ((id, t) in texts) {
+                    val count = coverStems.count { st -> st !in shared && st in t }
+                    if (count > 0) hits.merge(id, COVER_WEIGHT * minOf(count, COVER_MAX), Double::plus)
+                }
+                // what an earlier session fetched stays just under the best match after the bonus moved it
+                val rise = (hits.values.maxOrNull() ?: topBeforeCover) - topBeforeCover
+                if (rise > 0) for (id in remembered) hits.merge(id, rise, Double::plus)
+            }
+        }
         // tests describe behaviour but are rarely the answer; keep them, below production code
         val codeHits = hits.entries.filter { nodes[it.key]?.kind !in setOf(NodeKind.FLOW, NodeKind.COMMUNITY, NodeKind.PACKAGE, NodeKind.FILE) }
             .sortedByDescending { if (nodes[it.key]?.attrs?.get("test") == "true") it.value * 0.3 else it.value }
@@ -1108,7 +1139,7 @@ class Queries(
             // class that the lead's chain never reached is one (MasterController.fetchRoles calls fetchStates, and the
             // MasterServiceImpl.fetchRoles nothing calls is the roles query and the bug): walked at any score
             val sameName = lead != null && simpleName(c) == simpleName(lead) && owner(c) != owner(lead)
-            if (walks > 0 && !sameName && (hits[c] ?: 0.0) < (hits[lead] ?: 0.0) * NEAR_MISS) break
+            if (walks > 0 && !sameName && (nameScore[c] ?: 0.0) < (nameScore[lead] ?: 0.0) * NEAR_MISS) break // name scores on both sides: body words may pick the lead, never buy a chain
             if (findQ && walks > 0 && !sameName && (hits[c] ?: 0.0) < (hits[lead] ?: 0.0) * FIND_NEAR) break // the thing named, and its near-ties, not a runner-up's chain
             val steps = (if (walks == 0 && entry != null) listOf(entry) else emptyList()) + walk(c, if (walks == 0) (if (findQ) FIND_STEPS else PACK_STEPS) else PACK_STEPS_MORE).filter { it !in spine }
             if (System.getenv("JIRRAFE_DEBUG") == "1") System.err.println("debug: walk $walks from ${simpleName(c)} (%.2f) entry=${entry?.let { simpleName(it) }} -> ${steps.map { simpleName(it) }}".format(hits[c] ?: 0.0))
