@@ -97,6 +97,7 @@ class Queries(
         private val WORKFLOW = Regex("\\b(workflow|steps?|process|lifecycle|end[ -]to[ -]end)\\b")
         /** A question about a mechanism, answered by a chain of bodies; without one of these it names a thing and asks what it is. */
         private val MECHANISM = Regex("\\b(how|happens?|happened|workflow|steps?|process|why|flows?|works?|lifecycle|when|after|before|fails?|handles?|handled)\\b")
+        private const val VERB_BONUS = 1.0 // a name that starts with the question's verb: a point, not a multiple of a rank score that is often a fifth
         private const val FIND_STEPS = 2 // bodies along a find question's chain: the thing named and what it hands to
         private const val FIND_LEADS = 3 // "where is the expiry set" is three writers, scored within a few percent of each other
         private const val FIND_NEAR = 0.8 // a runner-up this close to the lead is the same thing elsewhere; the filter at half the JWT generator's score is not
@@ -796,10 +797,18 @@ class Queries(
             // and a word much of the code carries ("response", "user", "get") says little about which thing is meant:
             // its first match scored like a rare word's, and a HealthResponse DTO led a question about an export response
             fun common(found: List<Node>) = if (found.count { it.kind in CODE || it.kind == NodeKind.METHOD || it.kind == NodeKind.CONSTRUCTOR } >= 12) 0.5 else 1.0
-            val found = find(w, 15); val r = rare(found) * common(found)
-            found.forEachIndexed { i, n -> hit(n, r / (i + 1)) }
+            // a method's name starts with its verb, and the question's verb is the word that says what is meant:
+            // "sends the job event" tied createJob with sendJob on "job", and "send" is sendJob's first word
             val stem = stem(w)
-            if (stem != w) find(stem, 15).let { f -> val rs = rare(f) * common(f); f.forEachIndexed { i, n -> hit(n, 0.8 * rs / (i + 1)) } }
+            fun verb(n: Node): Double {
+                if (n.kind != NodeKind.METHOD) return 1.0
+                val first = simpleName(n.id).takeWhile { it.isLowerCase() || it.isDigit() }
+                if (first == "get" || first == "set" || first == "is") return 1.0 // an accessor's prefix is not a verb: "set" named every Lombok setter, and each passed a point to its callers
+                return if (first.length >= 3 && (first == stem || first == w.lowercase() || (stem.length >= 4 && first.startsWith(stem)))) 2.0 else 1.0
+            }
+            val found = find(w, 15); val r = rare(found) * common(found)
+            found.forEachIndexed { i, n -> hit(n, r / (i + 1)); if (verb(n) > 1.0) hit(n, VERB_BONUS) }
+            if (stem != w) find(stem, 15).let { f -> val rs = rare(f) * common(f); f.forEachIndexed { i, n -> hit(n, 0.8 * rs / (i + 1)); if (verb(n) > 1.0 && found.none { it.id == n.id }) hit(n, VERB_BONUS) } }
         }
         // A hit on a field, or on a one-line accessor, is a hit on the code that writes, reads or calls it: "where is
         // the password expiry date set" hit the field and its Lombok setter, neither can lead, and the three methods
