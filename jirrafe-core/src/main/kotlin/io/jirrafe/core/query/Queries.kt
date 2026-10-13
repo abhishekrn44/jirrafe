@@ -95,6 +95,11 @@ class Queries(
         private const val BREADTH_MEMBERS = 15 // member lines per class in that survey
         /** A question about a workflow: its second step is not called by its first, it reads what the first wrote. */
         private val WORKFLOW = Regex("\\b(workflow|steps?|process|lifecycle|end[ -]to[ -]end)\\b")
+        /** A question about a mechanism, answered by a chain of bodies; without one of these it names a thing and asks what it is. */
+        private val MECHANISM = Regex("\\b(how|happens?|happened|workflow|steps?|process|why|flows?|works?|lifecycle|when|after|before|fails?|handles?|handled)\\b")
+        private const val FIND_STEPS = 2 // bodies along a find question's chain: the thing named and what it hands to
+        private const val FIND_LEADS = 3 // "where is the expiry set" is three writers, scored within a few percent of each other
+        private const val FIND_NEAR = 0.8 // a runner-up this close to the lead is the same thing elsewhere; the filter at half the JWT generator's score is not
         private const val NEAR_MISS = 0.5 // a second match scoring this fraction of the first gets its own chain; new tokens cost twelve times re-read ones
         /** Where a request goes next, by the knowledge layer's classification of the target's class. */
         private val BEHAVIOUR_WORDS = setOf("happen", "happens", "happened", "when", "does", "handle", "handles", "handled", "return", "returns", "why", "work", "works", "after", "before", "fails", "fail")
@@ -848,6 +853,11 @@ class Queries(
         // keys and was listed, with no body
         val behavioural = words.any { it.lowercase() in BEHAVIOUR_WORDS }
         val listing = kindHits.isNotEmpty() && !question.trim().lowercase().startsWith("how") && !behavioural && (bareKind || kindHits.size > 1)
+        // "which method generates the JWT", "what does getPassword do", "where is the file written": one body answers,
+        // and grep answers in one file read. The mechanism shape packed ten bodies for the first of those, the security
+        // family and the callers above the lead among them. A question with no mechanism word packs the thing named,
+        // what it hands to, the helpers the question names, and its callers as lines; nothing rides on an annotation
+        val findQ = !listing && !MECHANISM.containsMatchIn(question.lowercase())
         if (hits.isEmpty()) for (w in words) store.nodesLike(w, 10).filter { wantsDocs || it.kind != NodeKind.DOC }.forEach { hit(it, 0.5) }
         // a hit on wiring (route, topic, config key, bean) is really about the code attached to it
         for ((id, score) in hits.toList()) {
@@ -1065,7 +1075,7 @@ class Queries(
                 // them. Up to two callers between the entry and the lead ride above it, on top of the walk's slots
                 val ancestors = ArrayList<String>()
                 var cur = from
-                while (ancestors.size < ANCESTORS) {
+                while (ancestors.size < (if (findQ) 0 else ANCESTORS)) {
                     val targets = setOf(cur) + store.edgesFrom(cur, EdgeKind.OVERRIDES).map { it.to }
                     val up = bestFlowSteps.firstOrNull { c -> c != bestFlowSteps.first() && c != from && c !in ancestors && (flowDepth[c] ?: 0) < (flowDepth[cur] ?: 0) &&
                         packable(c) && !trivial(c) && (store.edgesFrom(c, EdgeKind.CALLS) + store.edgesFrom(c, EdgeKind.DISPATCHES_TO)).any { it.to in targets } } ?: break
@@ -1083,14 +1093,15 @@ class Queries(
         var firstWalk = 0 // where the lead's own chain ends: a workflow's next step goes in there, ahead of a mere runner-up
         for (c in (listOfNotNull(flowLead) + candidates).distinct()) { // the covering flow's entry walks first
             if (listing) break
-            if (walks == PACK_LEADS || spine.size >= PACK_MAX || c in spine) continue
+            if (walks == (if (findQ) FIND_LEADS else PACK_LEADS) || spine.size >= PACK_MAX || c in spine) continue
             if (routePinned && walks > 0 && c !in flowSteps) continue // a pinned route's answer is its flow; nothing outside it gets a chain
             // a further chain only for a match that could as well be the answer; a method with the lead's own name in another
             // class that the lead's chain never reached is one (MasterController.fetchRoles calls fetchStates, and the
             // MasterServiceImpl.fetchRoles nothing calls is the roles query and the bug): walked at any score
             val sameName = lead != null && simpleName(c) == simpleName(lead) && owner(c) != owner(lead)
             if (walks > 0 && !sameName && (hits[c] ?: 0.0) < (hits[lead] ?: 0.0) * NEAR_MISS) break
-            val steps = (if (walks == 0 && entry != null) listOf(entry) else emptyList()) + walk(c, if (walks == 0) PACK_STEPS else PACK_STEPS_MORE).filter { it !in spine }
+            if (findQ && walks > 0 && !sameName && (hits[c] ?: 0.0) < (hits[lead] ?: 0.0) * FIND_NEAR) break // the thing named, and its near-ties, not a runner-up's chain
+            val steps = (if (walks == 0 && entry != null) listOf(entry) else emptyList()) + walk(c, if (walks == 0) (if (findQ) FIND_STEPS else PACK_STEPS) else PACK_STEPS_MORE).filter { it !in spine }
             if (System.getenv("JIRRAFE_DEBUG") == "1") System.err.println("debug: walk $walks from ${simpleName(c)} (%.2f) entry=${entry?.let { simpleName(it) }} -> ${steps.map { simpleName(it) }}".format(hits[c] ?: 0.0))
             spine += steps
             walks++
@@ -1142,7 +1153,7 @@ class Queries(
         val spineThrows = spine.flatMap { b -> store.edgesFrom(b, EdgeKind.CALLS).map { it.to } }
             .filter { it.substringAfter('#').startsWith("<init>(") && owner(it).substringAfterLast('.').endsWith("Exception") }
             .map { owner(it) }.toSet()
-        val families = FAMILIES.filter { f -> f in asked || f.annotations.any { it in onSpine } || f.edges.any { k -> spine.any { store.edgesFrom(it, k).isNotEmpty() } } ||
+        val families = FAMILIES.filter { f -> f in asked || !findQ && f.annotations.any { it in onSpine } || !findQ && f.edges.any { k -> spine.any { store.edgesFrom(it, k).isNotEmpty() } } ||
             ("exception" in f.words && spineThrows.isNotEmpty()) }
         val spineIds = (spine + spine.map { owner(it) }).toSet()
         val wiring = ArrayList<Pair<Node, String>>() // site, its annotation text
@@ -1241,7 +1252,7 @@ class Queries(
         val concentrated = (spineFiles.size in 1..2 || breadth.isNotEmpty()) && wiringBodies.none { it !in spine }
         val fileTokens = spineFiles.associateWith { f -> runCatching { java.nio.file.Files.size(java.nio.file.Path.of(f)) / 4 }.getOrDefault(Long.MAX_VALUE) }
         val whole = if (concentrated && breadth.isEmpty()) spineFiles.filter { (fileTokens[it] ?: Long.MAX_VALUE) <= WHOLE_FILE_TOKENS } else emptyList()
-        val cards = if (concentrated) spineFiles.filter { it !in whole } else emptyList()
+        val cards = if (concentrated && !findQ) spineFiles.filter { it !in whole } else emptyList() // a card is a map of a class; a find question asked for one member
         // a one-line delegation adds a header, a citation and a line of code to say what its caller already showed
         // the framework body the question is about comes first: "token checks on subsequent requests" means the
         // filter, not the encoder, whatever order the family lists its types in
@@ -1261,7 +1272,7 @@ class Queries(
             store.edgesFrom(w, EdgeKind.PROVIDES_BEAN).isNotEmpty() && store.node(w)?.let { m -> sources?.read(m, 0)?.text }
                 ?.let { Regex("""new\s+([A-Z]\w*)\s*[(<]""").find(it)?.groupValues?.get(1) }?.let { it in ownTypes } == true
         }
-        val askedFirst = (ownInstanceProviders + wiringBodies).filter { it !in spine }.distinct().filter { !listing && (spine.isEmpty() || namedWiring(it) || it in chainBeans || it in ownInstanceProviders || it in handlerBodies) }
+        val askedFirst = (ownInstanceProviders + wiringBodies).filter { it !in spine }.distinct().filter { !listing && (spine.isEmpty() || namedWiring(it) || !findQ && (it in chainBeans || it in ownInstanceProviders || it in handlerBodies)) }
         // the entry's body is the route's annotations and a delegation, two or three thousand characters in every answer.
         // When the question does not ask about the endpoint it rides as the flow's name, its call-site and outcome facts
         // and its wiring lines, not as a body; the lead itself, and a question with a route word, keep it
@@ -1308,7 +1319,7 @@ class Queries(
         // each, else the one with the most words and the longest body; a sibling the lead's walk could reach is not this
         val longStems = stems.map { it.lowercase() }.filter { it.length >= 4 }.distinct()
         val taken = (pack + helpers).map { it.id }.toSet()
-        val siblings = pack.map { owner(it.id).substringBefore('$') }.distinct()
+        val siblings = if (findQ) emptyList<Pack>() else pack.map { owner(it.id).substringBefore('$') }.distinct()
             .flatMap { c -> store.edgesFrom(c, EdgeKind.CONTAINS).map { it.to } }
             .filter { id -> id !in taken && store.node(id)?.let { n -> n.kind == NodeKind.METHOD && n.origin == Origin.REPO && n.attrs["test"] != "true" && "lombok.Generated" !in (n.attrs["annotations"] ?: "") && !trivial(id) } == true }
             .map { id -> id to longStems.count { simpleName(id).lowercase().contains(it) } }.filter { it.second > 0 }
@@ -1322,7 +1333,7 @@ class Queries(
         // A packed predicate is answered by its callers: existsByUsername says nothing about what "taken" means;
         // createNewUser, which calls the repository query it wraps and returns null on true, does. The callers short
         // enough to show ride as bodies; a long one keeps its call-site fact below, with the condition chain it sits in
-        val predicateCallers = pack.filter { b -> store.node(b.id)?.let { n -> "boolean" in (n.signature ?: "") && (n.endLine ?: 0) - (n.startLine ?: 0) <= 10 } == true }
+        val predicateCallers = if (findQ) emptyList<Pack>() else pack.filter { b -> store.node(b.id)?.let { n -> "boolean" in (n.signature ?: "") && (n.endLine ?: 0) - (n.startLine ?: 0) <= 10 } == true }
             .flatMap { b -> listOf(b.id) + store.edgesFrom(b.id, EdgeKind.CALLS).map { it.to }.filter { store.node(owner(it))?.attrs?.get("layer") == "repository" } }.distinct()
             .flatMap { t -> store.edgesTo(t, EdgeKind.CALLS).map { it.from } }.distinct()
             .filter { id -> id !in taken && siblings.none { it.id == id } && store.node(id)?.let { n -> n.kind == NodeKind.METHOD && n.origin == Origin.REPO && n.attrs["test"] != "true" && ((n.endLine ?: 0) - (n.startLine ?: 0)) in 2..HELPER_LINES } == true }
@@ -1640,7 +1651,7 @@ class Queries(
                     })
                     // with bodies in the answer the flows are context, not the answer: the first one's steps beyond the
                     // pack, and the others by name only. Every step id is forty characters an agent re-reads every turn.
-                    val packedBodies = pack.isNotEmpty()
+                    val packedBodies = pack.isNotEmpty() || findQ
                     for ((i, entry) in rankedFlows.cap(if (packedBodies) 1 else maxOf(1, l / 4)).withIndex()) {
                         val f = store.node(entry.key) ?: continue
                         add(buildJsonObject {
@@ -1648,7 +1659,7 @@ class Queries(
                             val steps = f.attrs["steps"]?.let { json.parseToJsonElement(it).jsonArray } ?: JsonArray(emptyList())
                             val shown = when {
                                 packedBodies && i > 0 -> emptyList()
-                                packedBodies -> steps.toList().filter { s -> s.jsonObject["id"]!!.jsonPrimitive.content.let { it !in packed && packable(it) } }.cap(minOf(6, l)) // the steps worth following, not the DTO builders the walk met
+                                packedBodies -> steps.toList().filter { s -> s.jsonObject["id"]!!.jsonPrimitive.content.let { it !in packed && packable(it) } }.cap(minOf(if (findQ) 3 else 6, l)) // the steps worth following, not the DTO builders the walk met
                                 else -> steps.toList().cap(if (i == 0) l else maxOf(3, l / 2)) // later flows shrink first
                             }
                             put("stepCount", steps.size)
@@ -1762,7 +1773,7 @@ class Queries(
                     // five, not three: "password generated" led with generateToken, and the generator, fourth by score,
                     // was cut from the list an agent would have followed it from
                     // and when the budget binds (level three and under), the map yields to the bodies: two, not five
-                    for (id in ranked.cap(listedIds.size + (if (pack.isNotEmpty()) (if (l >= 5) 5 else 2) else maxOf(2, l / 2)))) {
+                    for (id in ranked.cap(listedIds.size + (if (findQ) 3 else if (pack.isNotEmpty()) (if (l >= 5) 5 else 2) else maxOf(2, l / 2)))) {
                         val n = nodes[id] ?: continue
                         add(buildJsonObject {
                             ref(n).forEach { (k, v) -> put(k, v) }
