@@ -1697,8 +1697,12 @@ class Queries(
                 if (l >= 5 && data.isNotEmpty()) put("data", buildJsonArray {
                     for ((c, fields) in data) add(buildJsonObject { put("id", c.id); (if (c.attrs["table"] != null) annotationAt(c, when (c.attrs["store"]?.substringBefore(' ')) { null -> "@Table"; "redis" -> "@RedisHash"; else -> "@Document" }) else declarationAt(c))?.let { put("at", it) }; c.attrs["table"]?.let { put("table", it) }; c.attrs["store"]?.let { put("store", it) }; put("fields", fields.joinToString(", ")) })
                 })
-                if (l >= 5 && configKeys.isNotEmpty()) put("config", buildJsonArray {
-                    for (k in configKeys) add(buildJsonObject { put("key", k.fqn); k.attrs["value"]?.let { put("value", it) }; at(k)?.let { put("at", it) } })
+                // config is the first section a cut drops, and the odsRetry keys a question about the retry named went
+                // every time, for a config call; a key whose name says a question word stays at any level
+                val namedConfig = configKeys.filter { k -> stems.any { st -> st.length >= 4 && k.fqn.lowercase().contains(st.lowercase()) } }
+                val shownConfig = if (l >= 5) configKeys else namedConfig
+                if (shownConfig.isNotEmpty()) put("config", buildJsonArray {
+                    for (k in shownConfig) add(buildJsonObject { put("key", k.fqn); k.attrs["value"]?.let { put("value", it) }; at(k)?.let { put("at", it) } })
                 })
                 // complete for the annotations named: the graph knows every site, which is what lets an agent stop looking.
                 // One level earlier than data and config: it is four lines, and the two-step question lands at level 4 at the
@@ -1710,7 +1714,7 @@ class Queries(
                 // what the budget cut, by name: a section that vanishes without a word reads as "there is none", and the
                 // model then writes "not shown" or a framework default where one more call would have answered
                 if (l < 5) {
-                    val cut = listOfNotNull("data".takeIf { data.isNotEmpty() }, "config".takeIf { configKeys.isNotEmpty() }, "wiring".takeIf { l < 4 && wiringSites.isNotEmpty() },
+                    val cut = listOfNotNull("data".takeIf { data.isNotEmpty() }, "config".takeIf { configKeys.size > namedConfig.size }, "wiring".takeIf { l < 4 && wiringSites.isNotEmpty() },
                         "dependencies".takeIf { dependencies.isNotEmpty() }, "facts (${minOf(facts.size, FACTS) - 3} more)".takeIf { facts.size > 3 })
                     if (cut.isNotEmpty()) put("omitted", buildJsonArray { for (c in cut) add(JsonPrimitive(c)) })
                 }
