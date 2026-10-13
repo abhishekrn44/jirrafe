@@ -48,6 +48,7 @@ class Queries(
         private const val PACK_MAX = 6 // bodies in one answer
         private const val HELPERS = 3 // same-class private helpers appended to the bodies
         private const val HELPER_LINES = 25
+        private const val ANCESTORS = 2 // callers between the flow's entry and a deep lead, packed above it
         private const val FACTS = 10 // evidence lines: at eight, the derived query and the chained call site pushed the outcome off
         private const val PACK_LINES = 120 // per body; a longer method is the agent's own call to read
         private const val DATA_CLASSES = 4
@@ -1030,7 +1031,18 @@ class Queries(
                     // trivial steps stay in the walk and are dropped at pack time: they keep the first walk from spending every
                     // slot on deep steps of its own flow (getCountryById, getStateById) that the second walk's bodies need
                     .filter { it == from || packable(it) }.filter { it !in reps }
-                (ordered.take(maxOf(1, steps - reps.size)) + reps).distinct()
+                // a deep lead's callers: the walk only goes down, so the switch in route that sends the 140B01 case to
+                // routeUniversalLife and the catch in mapToMgPolicies were never shown, and the model made three calls for
+                // them. Up to two callers between the entry and the lead ride above it, on top of the walk's slots
+                val ancestors = ArrayList<String>()
+                var cur = from
+                while (ancestors.size < ANCESTORS) {
+                    val targets = setOf(cur) + store.edgesFrom(cur, EdgeKind.OVERRIDES).map { it.to }
+                    val up = bestFlowSteps.firstOrNull { c -> c != bestFlowSteps.first() && c != from && c !in ancestors && (flowDepth[c] ?: 0) < (flowDepth[cur] ?: 0) &&
+                        packable(c) && !trivial(c) && (store.edgesFrom(c, EdgeKind.CALLS) + store.edgesFrom(c, EdgeKind.DISPATCHES_TO)).any { it.to in targets } } ?: break
+                    ancestors += up; cur = up
+                }
+                (listOf(ordered.first()) + ancestors.reversed() + ordered.drop(1).take(maxOf(1, steps - reps.size) - 1) + reps).distinct()
             }
             else -> chain(from).ifEmpty { listOf(from) }.filter { it == from || packable(it) }.take(steps)
         }
