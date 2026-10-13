@@ -796,6 +796,22 @@ class Queries(
             val stem = stem(w)
             if (stem != w) find(stem, 15).let { f -> val rs = rare(f) * common(f); f.forEachIndexed { i, n -> hit(n, 0.8 * rs / (i + 1)) } }
         }
+        // A hit on a field, or on a one-line accessor, is a hit on the code that writes, reads or calls it: "where is
+        // the password expiry date set" hit the field and its Lombok setter, neither can lead, and the three methods
+        // that call the setter were never candidates. The score passes to them; an accessor the whole code calls says
+        // nothing and passes nothing
+        for ((id, score) in hits.toList()) {
+            val n = store.node(id) ?: continue
+            if (n.origin != Origin.REPO) continue
+            val users = when {
+                n.kind == NodeKind.FIELD -> (store.edgesTo(id, EdgeKind.WRITES_FIELD) + store.edgesTo(id, EdgeKind.READS_FIELD)).map { it.from }
+                n.kind == NodeKind.METHOD && (n.endLine ?: 0) - (n.startLine ?: 0) <= 0 && simpleName(id).let { it.startsWith("get") || it.startsWith("set") || it.startsWith("is") } ->
+                    store.edgesTo(id, EdgeKind.CALLS).map { it.from }
+                else -> emptyList()
+            }.distinct().filter { u -> store.node(u)?.let { m -> m.origin == Origin.REPO && m.attrs["test"] != "true" && (m.kind == NodeKind.METHOD || m.kind == NodeKind.CONSTRUCTOR) } == true }
+            if (users.isEmpty() || users.size > 6) continue
+            for (u in users) hits.merge(u, score, Double::plus)
+        }
         // "which routes ...", "what topics ...": the question names a kind, so list that kind (filtered by the other words)
         val kindHits = ArrayList<Node>() // the kind the question named: these lead the matches whatever a name scored
         var bareKind = false // "what routes exist": the kind word with nothing else is always a listing
