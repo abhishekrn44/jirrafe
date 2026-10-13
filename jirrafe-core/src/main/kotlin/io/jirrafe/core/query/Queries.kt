@@ -971,9 +971,12 @@ class Queries(
         // handed the answer to the changePassword flow on "password" alone, over the method that generates one
         val flowCovers = topFlow?.let { f -> val tokens = flowTokens[f] ?: emptySet(); stems.count { s -> matches(tokens, s.lowercase()) && (stemFlows[s] ?: 0) <= maxOf(2, flowTokens.size / 2) } } ?: 0
         val flowSteps = bestFlowStepsOf(topFlow)
+        // a route the question named pinned this flow: the lead comes from its steps, whatever a name outside scored.
+        // "the search endpoint" pinned GET /search and the lead was still taken from outside it
+        val routePinned = topFlow != null && topFlow.id in routeFlows
         // the flow won on covering the question, so its entry leads even when no word named it: `saveRequest` is
         // what "the user-creation request and approval workflow" means, though the question never says the word
-        val flowLead = if (flowCovers >= 2) (candidates.firstOrNull { it in flowSteps }
+        val flowLead = if (flowCovers >= 2 || routePinned) (candidates.firstOrNull { it in flowSteps }
             ?: flowSteps.firstOrNull { id -> store.node(id)?.let { leadable(it) } == true }?.also { id -> store.node(id)?.let { (nodes as MutableMap)[id] = it } }) else null
         val lead = flowLead ?: candidates.firstOrNull()
         // JIRRAFE_DEBUG=1: the ranking on stderr, for reading why an answer led with what it did
@@ -1040,6 +1043,7 @@ class Queries(
         for (c in (listOfNotNull(flowLead) + candidates).distinct()) { // the covering flow's entry walks first
             if (listing) break
             if (walks == PACK_LEADS || spine.size >= PACK_MAX || c in spine) continue
+            if (routePinned && walks > 0 && c !in flowSteps) continue // a pinned route's answer is its flow; nothing outside it gets a chain
             // a further chain only for a match that could as well be the answer; a method with the lead's own name in another
             // class that the lead's chain never reached is one (MasterController.fetchRoles calls fetchStates, and the
             // MasterServiceImpl.fetchRoles nothing calls is the roles query and the bug): walked at any score
@@ -1220,7 +1224,8 @@ class Queries(
         // the entry's body is the route's annotations and a delegation, two or three thousand characters in every answer.
         // When the question does not ask about the endpoint it rides as the flow's name, its call-site and outcome facts
         // and its wiring lines, not as a body; the lead itself, and a question with a route word, keep it
-        val entryOut = spine.firstOrNull()?.takeIf { e -> !asksRoute && e != lead && store.edgesFrom(e, EdgeKind.HANDLES_ROUTE).isNotEmpty() }
+        // keyed on the pin, not on a route word: "the API response" says api and packed a controller body for nothing
+        val entryOut = spine.firstOrNull()?.takeIf { e -> !routePinned && e != lead && store.edgesFrom(e, EdgeKind.HANDLES_ROUTE).isNotEmpty() }
         val pack = (spine.filterIndexed { i, id -> id != entryOut && (i == 0 || !trivial(id)) } + askedFirst.take(WIRING_BODIES)).mapNotNull { id -> nodes[id] ?: store.node(id) }
             .filter { n -> n.file == null || (n.file !in whole && n.file !in cards) } // its file is already going, whole or as a card
             .mapNotNull { n ->
