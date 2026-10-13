@@ -50,7 +50,7 @@ class Queries(
         private const val HELPER_LINES = 25
         private const val PER_CLASS = 2 // bodies of one class in a walk, besides the lead and the entry
         private const val ANCESTORS = 2 // callers between the flow's entry and a deep lead, packed above it
-        private const val FACTS = 10 // evidence lines: at eight, the derived query and the chained call site pushed the outcome off
+        private const val FACTS = 12 // evidence lines: at eight, the derived query and the chained call site pushed the outcome off; at ten, a side caller's two lines pushed the 400 and the 409 off
         private const val PACK_LINES = 120 // per body; a longer method is the agent's own call to read
         private const val DATA_CLASSES = 4
         private const val DATA_FIELDS = 20
