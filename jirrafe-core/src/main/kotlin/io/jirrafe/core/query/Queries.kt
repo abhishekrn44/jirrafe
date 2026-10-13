@@ -1027,7 +1027,9 @@ class Queries(
                 // service interface's step is not, since its implementation is often the one-line getter the pack drops,
                 // and showing it evicted the facts the question needed
                 fun resolved(id: String): String = if (id == from || !trivial(id)) id else
-                    store.edgesTo(id, EdgeKind.OVERRIDES).map { it.from }.filter { packable(it) && layerOf(owner(it)) == "repository" && store.node(it)?.attrs?.get("test") != "true" }.singleOrNull() ?: id
+                    // or whose name a question word says: findCompactResponse was packed as its one-line declaration and
+                    // the answer said the implementation is not shown
+                    store.edgesTo(id, EdgeKind.OVERRIDES).map { it.from }.filter { packable(it) && (layerOf(owner(it)) == "repository" || named(it)) && store.node(it)?.attrs?.get("test") != "true" }.singleOrNull() ?: id
                 // siblings by layer, then flow depth, then score: in discovery order upsert and buildEmptyResponse took
                 // slots ahead of fetchPlanningGroupDetailsFromOds, and a service's fallback with its helper took the
                 // repository's. Two bodies of one class besides the lead and the entry; the third is the helper rule's
