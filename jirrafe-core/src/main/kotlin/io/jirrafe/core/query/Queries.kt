@@ -48,6 +48,7 @@ class Queries(
         private const val PACK_MAX = 6 // bodies in one answer
         private const val HELPERS = 3 // same-class private helpers appended to the bodies
         private const val HELPER_LINES = 25
+        private const val PER_CLASS = 2 // bodies of one class in a walk, besides the lead and the entry
         private const val ANCESTORS = 2 // callers between the flow's entry and a deep lead, packed above it
         private const val FACTS = 10 // evidence lines: at eight, the derived query and the chained call site pushed the outcome off
         private const val PACK_LINES = 120 // per body; a longer method is the agent's own call to read
@@ -1027,10 +1028,15 @@ class Queries(
                 // and showing it evicted the facts the question needed
                 fun resolved(id: String): String = if (id == from || !trivial(id)) id else
                     store.edgesTo(id, EdgeKind.OVERRIDES).map { it.from }.filter { packable(it) && layerOf(owner(it)) == "repository" && store.node(it)?.attrs?.get("test") != "true" }.singleOrNull() ?: id
-                val ordered = (listOf(bestFlowSteps.first()) + rest.sortedBy { layerRank(it) }).map(::resolved).distinct()
+                // siblings by layer, then flow depth, then score: in discovery order upsert and buildEmptyResponse took
+                // slots ahead of fetchPlanningGroupDetailsFromOds, and a service's fallback with its helper took the
+                // repository's. Two bodies of one class besides the lead and the entry; the third is the helper rule's
+                val perClass = HashMap<String, Int>()
+                val ordered = (listOf(bestFlowSteps.first()) + rest.sortedWith(compareBy<String>({ layerRank(it) }, { flowDepth[it] ?: 0 }, { -(hits[it] ?: 0.0) }))).map(::resolved).distinct()
                     // trivial steps stay in the walk and are dropped at pack time: they keep the first walk from spending every
                     // slot on deep steps of its own flow (getCountryById, getStateById) that the second walk's bodies need
                     .filter { it == from || packable(it) }.filter { it !in reps }
+                    .filter { id -> id == from || id == bestFlowSteps.first() || trivial(id) || perClass.merge(owner(id).substringBefore('$'), 1, Int::plus)!! <= PER_CLASS }
                 // a deep lead's callers: the walk only goes down, so the switch in route that sends the 140B01 case to
                 // routeUniversalLife and the catch in mapToMgPolicies were never shown, and the model made three calls for
                 // them. Up to two callers between the entry and the lead ride above it, on top of the walk's slots
