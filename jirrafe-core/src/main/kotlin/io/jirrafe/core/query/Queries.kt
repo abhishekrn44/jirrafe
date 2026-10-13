@@ -1383,7 +1383,9 @@ class Queries(
         val leadTargets = pack.sortedByDescending { hits[it.id] ?: 0.0 }.let { it.take(1) + helpers + it.drop(1) }.flatMap { b ->
             listOf(b.id) + cleanEdges(b.id, store.edgesFrom(b.id).filter { it.kind == EdgeKind.CALLS }) { it.to }.map { it.to }
                 .filter { store.node(owner(it))?.attrs?.get("layer") == "repository" && store.node(it)?.origin == Origin.REPO } }.distinct()
-        for (t in leadTargets) for (c in cleanEdges(t, store.edgesTo(t)) { it.from }.map { it.from }.distinct().filter { (it !in packed || it in predicateCallerIds) && store.node(it)?.origin == Origin.REPO }.take(3)) {
+        // callers in the flow the question covers come first: the facts are capped, and changePassword's two facts took
+        // the slots of saveRequest's exits and of the 409 the username question is about
+        for (t in leadTargets) for (c in cleanEdges(t, store.edgesTo(t)) { it.from }.map { it.from }.distinct().filter { (it !in packed || it in predicateCallerIds) && store.node(it)?.origin == Origin.REPO }.sortedBy { if (it in flowSteps) 0 else 1 }.take(3)) {
             if (callerFacts.size >= FACTS) break
             val caller = store.node(c) ?: continue
             if (caller.kind != NodeKind.METHOD && caller.kind != NodeKind.CONSTRUCTOR) continue
@@ -1420,7 +1422,7 @@ class Queries(
             }
             // what the endpoint does with that caller's result: createNewUser returns null for a taken name, and the
             // 400 "User Already Exists" is in AuthController, one hop up, where no answer built on the payload found it
-            if (store.node(owner(c))?.attrs?.get("layer") != "controller") for (h in cleanEdges(c, store.edgesTo(c)) { it.from }.map { it.from }.distinct()
+            if (store.node(owner(c))?.attrs?.get("layer") != "controller") for (h in cleanEdges(c, store.edgesTo(c)) { it.from }.map { it.from }.distinct().sortedBy { if (it in flowSteps) 0 else 1 }
                     .filter { it !in packed && store.node(owner(it))?.attrs?.get("layer") == "controller" }.take(2)) {
                 if (callerFacts.size >= FACTS) break
                 val handler = store.node(h) ?: continue
