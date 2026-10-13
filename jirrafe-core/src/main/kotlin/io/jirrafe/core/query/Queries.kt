@@ -757,7 +757,12 @@ class Queries(
         // bm25 prefers short entries: for "password" the fields and one-line accessors of four DTOs fill every slot
         // before the twenty-line method that generates one. Code with a body and the types come first, then the
         // accessors, then the fields; within a rank the search order stands
+        // a library's classes last: "expiry" found javax.cache.expiry.Duration and CreatedExpiryPolicy before the
+        // project's own getPasswordExpiryDate, "send" found MailSender.send and KafkaTemplate.send before sendJob, and
+        // the project's method, third or fourth, scored a quarter of a first place. They were filtered out of the
+        // candidates afterwards, when the rank had already been taken
         fun rank(n: Node) = when {
+            n.origin == Origin.EXTERNAL -> 3
             n.kind in CODE -> 0
             n.kind == NodeKind.METHOD || n.kind == NodeKind.CONSTRUCTOR -> if ((n.endLine ?: 0) - (n.startLine ?: 0) >= 2) 0 else 1
             n.kind == NodeKind.FIELD -> 2
