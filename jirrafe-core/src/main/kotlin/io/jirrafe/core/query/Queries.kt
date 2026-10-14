@@ -244,7 +244,9 @@ class Queries(
         // a bare class name: the one class so called, or the candidates when there are several
         TYPES.flatMap { k -> store.nodes(k) }.filter { it.id.substringAfterLast('.').substringAfterLast('$') == id }
     } else if ('#' in id) {
-        val want = id.substringAfter('#').replace(" ", "")
+        // the member as the answer printed it or as the graph names it: `<init>(String)` and `<init>(java.lang.String)`
+        // are the same member, and the second form failed beside a bare class name
+        val want = id.substringAfter('#').replace(" ", "").replace(PACKAGE, "")
         // the owner as the answer printed it: `OrderService#open()` names every class called OrderService, and a member
         // of each that matches; two of them are candidates, not a guess
         val cls = owner(id)
