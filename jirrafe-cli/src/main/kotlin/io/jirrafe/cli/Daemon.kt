@@ -97,9 +97,29 @@ object Daemon {
     // ---- client side ------------------------------------------------------------------------------
 
     /** The daemon's answer if one is listening for this project, else null (and the caller answers in-process). */
+    /** The jar this process runs from, by size and time: a daemon started from another one answers with that one's code. */
+    private fun jarStamp(): String = runCatching {
+        val p = Path.of(Daemon::class.java.protectionDomain.codeSource.location.toURI())
+        if (Files.isRegularFile(p)) "${Files.size(p)}:${Files.getLastModifiedTime(p).toMillis()}" else "dev"
+    }.getOrDefault("dev")
+
+    @Volatile private var stopping = false
+
     fun ask(out: Path, r: Request): Answer? {
         val port = out.resolve("daemon.port").takeIf { it.exists() }?.let { Files.readString(it).trim().toIntOrNull() } ?: return null
         val token = out.resolve("daemon.token").takeIf { it.exists() }?.let { Files.readString(it).trim() } ?: return null
+        // a daemon left by an earlier install answers with the code it was started with: a fix pulled and rebuilt
+        // changed nothing on the machine until the daemon was killed. One from another jar is told to stop, and this
+        // call answers in-process and leaves a fresh daemon behind
+        val served = out.resolve("daemon.jar").takeIf { it.exists() }?.let { runCatching { Files.readString(it).trim() }.getOrNull() }
+        if (served != jarStamp()) {
+            if (r.tool != "shutdown") runCatching { send(port, token, Request("shutdown", emptyList(), null, false, null, false, null, "json", false)) }
+            return null
+        }
+        return send(port, token, r)
+    }
+
+    private fun send(port: Int, token: String, r: Request): Answer? {
         return try {
             Socket().use { s ->
                 s.connect(java.net.InetSocketAddress(InetAddress.getLoopbackAddress(), port), 300)
@@ -143,14 +163,15 @@ object Daemon {
         val token = java.util.UUID.randomUUID().toString()
         val server = ServerSocket(0, 50, InetAddress.getLoopbackAddress())
         Files.writeString(out.resolve("daemon.token"), token)
+        Files.writeString(out.resolve("daemon.jar"), jarStamp())
         Files.writeString(out.resolve("daemon.port"), server.localPort.toString(), StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE)
         var store = GraphStore.open(db)
         var stamp = Files.getLastModifiedTime(db).toMillis()
         val pool = Executors.newFixedThreadPool(4)
         var last = System.currentTimeMillis()
-        Runtime.getRuntime().addShutdownHook(Thread { runCatching { Files.deleteIfExists(out.resolve("daemon.port")); Files.deleteIfExists(out.resolve("daemon.token")) } })
+        Runtime.getRuntime().addShutdownHook(Thread { runCatching { Files.deleteIfExists(out.resolve("daemon.port")); Files.deleteIfExists(out.resolve("daemon.token")); Files.deleteIfExists(out.resolve("daemon.jar")) } })
         server.soTimeout = 5_000
-        while (true) {
+        while (!stopping) {
             val client = try { server.accept() } catch (e: java.net.SocketTimeoutException) {
                 if (System.currentTimeMillis() - last > IDLE_MS) break
                 continue
@@ -173,6 +194,7 @@ object Daemon {
         val presented = reader.readLine()
         if (presented != token) { w.print("ERROR wrong token"); w.flush(); return@use }
         val r = try { decode(reader.readLine() ?: "") } catch (e: Exception) { w.print("ERROR bad request"); w.flush(); return@use }
+        if (r.tool == "shutdown") { stopping = true; w.print("stopping"); w.flush(); return@use } // a newer jar's caller asked; the loop ends at its next tick
         val a = try { answer(root, out, store, r) } catch (e: Exception) { Answer("", e.message ?: e.toString()) }
         if (a.error != null) w.print("ERROR " + a.error) else w.print(a.text)
         w.flush()
