@@ -1354,7 +1354,16 @@ class Queries(
         // and a helper's own helper: persistApplication calls sendJob, which is the producer, and one level down is still the mechanism
         val h2 = privateHelpers(h1.map { it.id }, (packedIds + h1.map { it.id }).toSet())
         val h3 = privateHelpers(packedIds.filter { it in askedFirst }, (packedIds + (h1 + h2).map { it.id }).toSet())
+        // the walk's cap of two bodies a class did not bind the helpers: five ExcelExportService helpers rode beside
+        // exportData and pushed the config value the question asked for into `omitted`. A helper takes a third slot of
+        // its class only when its body says a question word
+        val classBodies = HashMap<String, Int>()
+        for (p in pack) classBodies.merge(owner(p.id).substringBefore('$'), 1, Int::plus)
         val helpers = (h1 + h2 + h3).distinctBy { it.id }
+            .filter { n -> val cls = owner(n.id).substringBefore('$')
+                val says = sources?.read(n, 0)?.text?.let { t -> stems.any { st -> st.length >= 5 && t.contains(st, ignoreCase = true) } } == true
+                val count = classBodies.merge(cls, 1, Int::plus)!!
+                says || count <= PER_CLASS }
             .take(HELPERS).mapNotNull { n -> sources?.read(n, 0)?.let { s ->
                 val raw = s.text.lines().dropWhile { it.isBlank() }.map { it.replace("\t", "  ").trimEnd() }
                 val indent = raw.filter { it.isNotBlank() }.minOfOrNull { it.length - it.trimStart().length } ?: 0
