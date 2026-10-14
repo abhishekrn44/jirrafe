@@ -1444,7 +1444,9 @@ class Queries(
             .mapNotNull { store.node(it) }
             .filter { it.kind in CODE && it.origin == Origin.REPO && it.attrs["layer"] == "model" && it.id.substringAfterLast('.').substringAfterLast('$') in packText })
             .distinctBy { it.id }.take(DATA_CLASSES)
-            .map { c -> c to store.edgesFrom(c.id, EdgeKind.CONTAINS).mapNotNull { store.node(it.to) }.filter { it.kind == NodeKind.FIELD }.map { f -> f.id.substringAfterLast('#') + (if (Attrs.annotations(f).values.any { it["unique"] == "true" }) " (unique)" else "") }.filter { !it.startsWith("this") && '$' !in it }.take(DATA_FIELDS) }
+            // the compiler's `class` and `this` are fields of no entity: a data line listed `class` among a DTO's fields
+            // and the answer repeated it
+            .map { c -> c to store.edgesFrom(c.id, EdgeKind.CONTAINS).mapNotNull { store.node(it.to) }.filter { it.kind == NodeKind.FIELD && !it.id.endsWith("#class") && !it.id.endsWith("#this") && !it.id.contains("#this$") }.map { f -> f.id.substringAfterLast('#') + (if (Attrs.annotations(f).values.any { it["unique"] == "true" }) " (unique)" else "") }.filter { !it.startsWith("this") && '$' !in it }.take(DATA_FIELDS) }
         // a constraint the judge credited to grep while we had it as one word: a word in a list is not evidence a model quotes,
         // the annotation line with its location is
         val constraints = (data.map { it.first } + queriedEntities).distinctBy { it.id }.flatMap { c -> store.edgesFrom(c.id, EdgeKind.CONTAINS).mapNotNull { store.node(it.to) }
