@@ -93,6 +93,7 @@ class Queries(
         private val FILTER_METHODS = setOf("doFilterInternal", "doFilter", "preHandle", "loadUserByUsername", "parse", "print", "convert", "commence", "handle")
         private const val FIELDS_MAX = 12
         private const val WHOLE_FILE_TOKENS = 700L // a file this size costs less whole than the same facts as fragments
+        private const val WHOLE_FILE_SLACK = 8L // lines a file may carry beyond twice its packed bodies and still read whole: the package, the imports that matter, the class line, the fields
         private const val CARD_MEMBERS = 30
         private const val BREADTH_CLASSES = 5 // classes shown when the question names a subsystem rather than a mechanism
         private const val BREADTH_MEMBERS = 15 // member lines per class in that survey
@@ -1303,7 +1304,11 @@ class Queries(
         val spineFiles = spine.mapNotNull { store.node(it)?.file }.distinct()
         val concentrated = (spineFiles.size in 1..2 || breadth.isNotEmpty()) && wiringBodies.none { it !in spine }
         val fileTokens = spineFiles.associateWith { f -> runCatching { java.nio.file.Files.size(java.nio.file.Path.of(f)) / 4 }.getOrDefault(Long.MAX_VALUE) }
-        val whole = if (concentrated && breadth.isEmpty()) spineFiles.filter { (fileTokens[it] ?: Long.MAX_VALUE) <= WHOLE_FILE_TOKENS } else emptyList()
+        // and only when the file is mostly the bodies it replaces: a 65-line token provider read whole for two three-line
+        // accessors cost four times the bodies, and a service file for its five-line deleteTrack cost ten
+        val fileLines = spineFiles.associateWith { f -> runCatching { java.nio.file.Files.lines(java.nio.file.Path.of(f)).use { it.count() } }.getOrDefault(Long.MAX_VALUE) }
+        val bodyLines = spineFiles.associateWith { f -> spine.mapNotNull { store.node(it) }.filter { it.file == f }.sumOf { ((it.endLine ?: 0) - (it.startLine ?: 0) + 1).toLong() } }
+        val whole = if (concentrated && breadth.isEmpty()) spineFiles.filter { (fileTokens[it] ?: Long.MAX_VALUE) <= WHOLE_FILE_TOKENS && (fileLines[it] ?: Long.MAX_VALUE) <= (bodyLines[it] ?: 0L) * 2 + WHOLE_FILE_SLACK } else emptyList()
         val cards = if (concentrated && !findQ) spineFiles.filter { it !in whole } else emptyList() // a card is a map of a class; a find question asked for one member
         // a one-line delegation adds a header, a citation and a line of code to say what its caller already showed
         // the framework body the question is about comes first: "token checks on subsequent requests" means the
