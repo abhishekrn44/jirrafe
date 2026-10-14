@@ -7,13 +7,14 @@ asks "how does X work", "what calls Y" or "what breaks if I change Z" and gets t
 classes and methods, their callers and their source, every one cited as `file:line`, in a few
 calls instead of a grep session.
 
-**The same answers in a third of the calls, for less money**, against the same model with grep and
-file reads, measured live on Spring services the model had not seen and scored against the facts a
-correct answer must state: Opus with the graph matched Opus with grep on seven questions of nine
-and came within eight points on the other two, in two to four calls against four to eleven, cheaper
-on eight of the nine. Sonnet with the graph beat Sonnet with grep on four questions, tied on three
-and lost two, every one of them in one or two calls. Neither model with the graph stated a
-framework default as a fact of the code, which grep answers did twice
+**The same answers in one call instead of five, reading half the tokens**, against the same model
+with grep and file reads, measured live on Spring services the model had not seen and scored
+against the facts a correct answer must state: Opus with the graph scored full marks on all nine
+questions, level with Opus and grep on seven and ahead on two, in two or three calls against five
+to thirteen, reading 19 to 49 percent fewer input tokens on eight of the nine. Sonnet with the
+graph was ahead of Sonnet and grep on four questions, level on four and behind on one, in one call
+each against three to ten, reading 27 to 61 percent fewer tokens. Neither graph answer stated a
+framework default as a fact of the code; grep answers did on both models
 ([What to expect](#what-to-expect)).
 
 Requirements: JDK 17 or 21; the project builds with Gradle 7.6+ or Maven 3.9. Kotlin modules are
@@ -153,7 +154,8 @@ one matters. jirrafe already knows the real callers (resolved by the compiler, d
 the end-to-end flow from the entry point, and includes the method body in the first answer, so most
 questions take one call instead of a dozen. Grep also stops at an `import` into an internal jar;
 jirrafe has read that jar's bytecode. Measured on Spring services the model had not seen, the same
-model on both sides: the same facts reached on seven questions of nine, at a third of the calls.
+model on both sides: every fact on all nine questions with Opus, in two or three calls against five
+to thirteen.
 
 **Against a general-purpose knowledge graph (graphify and similar).** Those tools extract entities
 and relations from any text with an LLM, which makes them work on anything but leaves the edges
@@ -176,45 +178,50 @@ answers are the same and only the calls and time are saved.
 
 ## What to expect
 
-Every number here comes from live A/B runs made on 8 and 9 October 2026: the same question put to
+Every number here comes from one live A/B run made on 14 October 2026: the same question put to
 Claude Code with the jirrafe skill and to a clean clone with only Read, Grep and Glob, the same
-model on both sides, with no proxy or output compression between the agent and the API. Four
-Spring repositories: one the model knows (a user-management service) and three it had not seen
-(a multi-service job board on Kafka and MongoDB, an audio-ingestion service on MinIO and Kafka, a
-metadata service with a Redis cache). Nine questions, each with a list of the facts a correct answer
-must state, written from the source before any run; an answer scores a point per fact, half for a
-partial one, and a wrong claim (one that contradicts the code, cites a line that does not support
-it, or states a framework default as a fact of this code) is counted separately. Nine questions is
-a direction, not a decimal.
+model on both sides, the two arms run back to back, with no proxy or output compression between the
+agent and the API. Four Spring repositories: one the model knows (a user-management service) and
+three it had not seen (a multi-service job board on Kafka and MongoDB, an audio-ingestion service on
+MinIO and Kafka, a metadata service with a Redis cache). Nine questions, each with a list of the
+facts a correct answer must state, written from the source before any run; an answer scores a point
+per fact, half for a partial one, and a wrong claim (one that contradicts the code, cites a line
+that does not support it, or states a framework default as a fact of this code) is counted
+separately. The cost column is input tokens read by the model over the whole answer, because the
+dollar figure of a session depends on the prompt cache's state at that moment and the token count
+does not. Nine questions, one run each, is a direction, not a decimal.
 
-- **Same model, Opus.** With the graph, the same score as with grep on seven questions of nine
-  (five of them full marks on both sides), seven and eight points behind on the other two. Two to
-  four calls a question against four to eleven; cheaper on eight of the nine, by $0.02 to $0.15,
-  and $0.02 dearer on the one where the whole file is shorter than the graph's answer.
-- **Same model, Sonnet.** Ahead of grep on four questions (by 7, 17, 17 and 29 points), level on
-  three, behind on two (by 6 and 7). One call on eight questions and two on the ninth, against two
-  to ten; cheaper on seven, equal on one, dearer by a cent on one.
-- **A cheaper model against a dearer one.** Sonnet with the graph against Opus with grep: level
-  on three questions, 5 to 11 points behind on six, at a quarter to a sixth of the cost ($0.04 to
-  $0.11 a question against $0.21 to $0.28). The graph closes most of the distance between the two
-  models; it does not close it. Where it falls short the line was in the answer and the smaller
-  model summarised past it.
+- **Same model, Opus.** With the graph, full marks on all nine questions; with grep, full marks on
+  seven, 86 and 94 on the other two. Two or three calls a question against five to thirteen. Input
+  tokens 95k to 143k against 128k to 278k: 19 to 49 percent fewer on eight questions, 8 percent
+  more on the one where grep read the small file the graph described.
+- **Same model, Sonnet.** Ahead of grep on four questions (by 17, 21, 22 and 22 points), level on
+  four, behind on one (by 12). One call on every question against three to ten. Input tokens 65k
+  to 73k against 95k to 169k: 27 to 61 percent fewer on every question.
+- **A cheaper model against a dearer one.** Sonnet with the graph against Opus with grep: level on
+  six questions, ahead on one, behind on two (by 12 and 29), reading 65k to 73k tokens of the
+  cheaper model against 128k to 278k of the dearer one, about a fifth of the input spend at list
+  prices. Where it falls short the line was in the answer and the smaller model wrote past it.
+- **Wrong claims.** Opus with the graph: none. Sonnet with the graph: one citation that pointed at
+  the wrong class's encoder, and a synthetic `class` field the graph itself listed among a DTO's
+  (a tool bug, fixed the same day). Grep on both models: the JWT library's expiry check stated as
+  a fact of this code, and on Opus the authentication manager's wiring to the encoder, which the
+  code never shows.
 - **What the graph carries that grep has to read for.** The facts grep found only by opening
-  whole files, and the graph now states as lines: what nothing reads or calls (an unused cache
+  whole files, and the graph states as lines: what nothing reads or calls (an unused cache
   repository, a constant never read, a service method no controller reaches), a topic's every
   producer and consumer across modules with their consumer groups, a bean the chain injects or a
   class builds its own instance of, a key written under a literal nothing else reads, and where a
   method too long to show exits.
 - **Against a general-purpose knowledge graph** (graphify), one repository, three questions, Opus
-  on both sides: the same facts, at 12 to 21 calls against 3 to 9 and $0.51 to $0.74 a question
-  against $0.23 to $0.33.
+  on both sides, 9 October: the same facts, at 12 to 21 calls against 3 to 9 and $0.51 to $0.74 a
+  question against $0.23 to $0.33.
 - **Internal jars.** On a project carrying two mostly unused libraries, cutting them to what the
   code reaches shrank the graph by a third.
 
 Two honest limits of the measurement: the scorer was the same agent that built the tool, reading
-both answers against the source, not a blind judge; and the cost of a session depends on prompt
-caching, so compare configurations run on the same day, as these were, and treat differences under
-three cents as noise.
+both answers against the source, not a blind judge; and one run per cell means a single fact, 11
+points on a nine-fact question, is the noise floor.
 
 Run it on your own project: copy `jirrafe-fixtures/benchmark/TEMPLATE.json`, replace each
 `question` with one of yours and each `expected` entry with the node ids a correct answer must
