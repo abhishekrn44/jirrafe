@@ -101,7 +101,7 @@ class Queries(
         /** A question about a mechanism, answered by a chain of bodies; without one of these it names a thing and asks what it is. */
         private val MECHANISM = Regex("\\b(how|happens?|happened|workflow|steps?|process|why|flows?|works?|lifecycle|when|after|before|fails?|handles?|handled)\\b")
         private const val VERB_BONUS = 1.0 // a name that starts with the question's verb: a point, not a multiple of a rank score that is often a fifth
-        private const val FIND_STEPS = 2 // bodies along a find question's chain: the thing named and what it hands to
+        private const val FIND_STEPS = 3 // slots along a find question's chain: the entry's, the thing named, and what it hands to
         private const val FIND_LEADS = 3 // "where is the expiry set" is three writers, scored within a few percent of each other
         private const val FIND_NEAR = 0.8 // a runner-up this close to the lead is the same thing elsewhere; the filter at half the JWT generator's score is not
         private const val NEAR_MISS = 0.5 // a second match scoring this fraction of the first gets its own chain; new tokens cost twelve times re-read ones
@@ -1121,7 +1121,13 @@ class Queries(
                         packable(c) && !trivial(c) && (store.edgesFrom(c, EdgeKind.CALLS) + store.edgesFrom(c, EdgeKind.DISPATCHES_TO)).any { it.to in targets } } ?: break
                     ancestors += up; cur = up
                 }
-                (listOf(ordered.first()) + ancestors.reversed() + ordered.drop(1).take(maxOf(1, steps - reps.size) - 1) + reps).distinct()
+                // the lead is in its own walk whatever it sorts after: with two slots, the entry took one and a repository
+                // step sorted ahead of a lead with no Spring layer, and routeUniversalLife was cut from the walk that was
+                // started for it. The entry, the callers above the lead, the lead, then the rest in order; on a find
+                // question a bodyless step holds no slot, since there is no second walk for it to hold one for
+                val fixed = (listOf(ordered.first()) + ancestors.reversed() + listOf(from)).distinct()
+                val used = 1 + (if (from != ordered.first()) 1 else 0)
+                (fixed + ordered.filter { it !in fixed && (!findQ || !trivial(it)) }.take(maxOf(0, steps - reps.size - used)) + reps).distinct()
             }
             else -> chain(from).ifEmpty { listOf(from) }.filter { it == from || packable(it) }.take(steps)
         }
