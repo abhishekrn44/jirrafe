@@ -1789,8 +1789,12 @@ class Queries(
                             if (n != null && s != null) add(buildJsonObject { put("id", n.id); put("at", "${relative(s.file)}:${s.startLine}"); put("text", s.text.replace("\t", "  ").lines().take(PACK_LINES).joinToString("\n")) }) } })
                     })
                 })
-                if (l >= 5 && data.isNotEmpty()) put("data", buildJsonArray {
-                    for ((c, fields) in data) add(buildJsonObject { put("id", c.id); (if (c.attrs["table"] != null) annotationAt(c, when (c.attrs["store"]?.substringBefore(' ')) { null -> "@Table"; "redis" -> "@RedisHash"; else -> "@Document" }) else declarationAt(c))?.let { put("at", it) }; c.attrs["table"]?.let { put("table", it) }; c.attrs["store"]?.let { put("store", it) }; put("fields", fields.joinToString(", ")) })
+                // an entity a question word names keeps its line at any level, as a named config key does: the Decimal128
+                // match key the question asked about was a field of the document the cut dropped
+                val namedData = data.filter { (c, _) -> stems.any { st -> st.length >= 4 && c.id.substringAfterLast('.').substringAfterLast('$').lowercase().contains(st.lowercase()) } }
+                val shownData = if (l >= 5) data else namedData
+                if (shownData.isNotEmpty()) put("data", buildJsonArray {
+                    for ((c, fields) in shownData) add(buildJsonObject { put("id", c.id); (if (c.attrs["table"] != null) annotationAt(c, when (c.attrs["store"]?.substringBefore(' ')) { null -> "@Table"; "redis" -> "@RedisHash"; else -> "@Document" }) else declarationAt(c))?.let { put("at", it) }; c.attrs["table"]?.let { put("table", it) }; c.attrs["store"]?.let { put("store", it) }; put("fields", fields.joinToString(", ")) })
                 })
                 // config is the first section a cut drops, and the odsRetry keys a question about the retry named went
                 // every time, for a config call; a key whose name says a question word stays at any level
@@ -1809,7 +1813,7 @@ class Queries(
                 // what the budget cut, by name: a section that vanishes without a word reads as "there is none", and the
                 // model then writes "not shown" or a framework default where one more call would have answered
                 if (l < 5) {
-                    val cut = listOfNotNull("data".takeIf { data.isNotEmpty() }, "config".takeIf { configKeys.size > namedConfig.size }, "wiring".takeIf { l < 4 && wiringSites.isNotEmpty() },
+                    val cut = listOfNotNull("data".takeIf { data.size > namedData.size }, "config".takeIf { configKeys.size > namedConfig.size }, "wiring".takeIf { l < 4 && wiringSites.isNotEmpty() },
                         "dependencies".takeIf { dependencies.isNotEmpty() }, "facts (${minOf(facts.size, FACTS) - 3} more)".takeIf { facts.size > 3 })
                     if (cut.isNotEmpty()) put("omitted", buildJsonArray { for (c in cut) add(JsonPrimitive(c)) })
                 }
