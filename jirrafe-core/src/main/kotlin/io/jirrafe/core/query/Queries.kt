@@ -107,6 +107,13 @@ class Queries(
         private const val NEAR_MISS = 0.5 // a second match scoring this fraction of the first gets its own chain; new tokens cost twelve times re-read ones
         /** Where a request goes next, by the knowledge layer's classification of the target's class. */
         private val BEHAVIOUR_WORDS = setOf("happen", "happens", "happened", "when", "does", "handle", "handles", "handled", "return", "returns", "why", "work", "works", "after", "before", "fails", "fail")
+        /** The code's word for the question's, used only when the question's word finds nothing in the project. */
+        private val SYNONYMS = mapOf(
+            "duplicate" to listOf("exists", "taken"), "taken" to listOf("exists"), "check" to listOf("exists"),
+            "fetch" to listOf("get", "find", "load"), "retrieve" to listOf("get", "find", "fetch"), "load" to listOf("get", "find", "fetch"),
+            "store" to listOf("save", "persist"), "persist" to listOf("save", "store"), "remove" to listOf("delete"),
+            "send" to listOf("publish", "produce", "emit"), "publish" to listOf("send", "produce"), "emit" to listOf("send", "publish"),
+        )
         private val LAYER_RANK = mapOf("controller" to 0, "service" to 0, "repository" to 0, "client" to 0, "util" to 2, "config" to 2, "model" to 3)
         /** What a lead is worth by its class's layer: a helper or an entity is rarely the answer, an unlabelled class often is. */
         private val LAYER_WEIGHT = mapOf("util" to 0.7, "config" to 0.7, "model" to 0.4)
@@ -818,6 +825,11 @@ class Queries(
             val found = find(w, 15); val r = rare(found) * common(found)
             found.forEachIndexed { i, n -> hit(n, r / (i + 1)); if (verb(n) > 1.0) hit(n, VERB_BONUS) }
             if (stem != w) find(stem, 15).let { f -> val rs = rare(f) * common(f); f.forEachIndexed { i, n -> hit(n, 0.8 * rs / (i + 1)); if (verb(n) > 1.0 && found.none { it.id == n.id }) hit(n, VERB_BONUS) } }
+            // a word the code never uses: "duplicates" and "taken" find nothing, and the check is existsBy. The code's word
+            // for it is searched only then, at a third of a hit and with no rarity bonus: "check" at full weight with a
+            // rarity bonus and validate among its words handed the username question to validateToken
+            if (found.none { it.origin == Origin.REPO } && find(stem, 15).none { it.origin == Origin.REPO })
+                for (syn in SYNONYMS[stem].orEmpty()) find(syn, 10).forEachIndexed { i, n -> hit(n, 0.3 / (i + 1)) }
         }
         // A hit on a field, or on a one-line accessor, is a hit on the code that writes, reads or calls it: "where is
         // the password expiry date set" hit the field and its Lombok setter, neither can lead, and the three methods
