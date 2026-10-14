@@ -233,7 +233,10 @@ class Queries(
     private fun resolve(id: String): Node? = resolveAll(id).firstOrNull()
 
     /** Every member an id denotes: `a.Foo#save` is all overloads of save, `a.Foo#save(Owner)` one of them. */
-    private fun resolveAll(id: String): List<Node> = store.node(id)?.let { listOf(it) } ?: if ('#' in id) {
+    private fun resolveAll(id: String): List<Node> = store.node(id)?.let { listOf(it) } ?: if ('#' !in id && '.' !in id) {
+        // a bare class name: the one class so called, or the candidates when there are several
+        TYPES.flatMap { k -> store.nodes(k) }.filter { it.id.substringAfterLast('.').substringAfterLast('$') == id }
+    } else if ('#' in id) {
         val want = id.substringAfter('#').replace(" ", "")
         // the owner as the answer printed it: `OrderService#open()` names every class called OrderService, and a member
         // of each that matches; two of them are candidates, not a guess
@@ -415,7 +418,10 @@ class Queries(
         val id = n.id
         memory?.log("source", id)
         val reader = sources ?: return error("source reading is not available in this server")
-        val whole = reader.read(n, contextLines) ?: return error("no readable source for '$id' (${n.origin.name.lowercase()}); decompiling is limited to internal jars")
+        // a file the node names that is not on this machine (a graph built elsewhere, a path case Windows rejects) threw
+        // out of the whole batch, and the valid body before it was lost with it
+        val whole = runCatching { reader.read(n, contextLines) }.getOrElse { e -> return error("no readable source for '$id': ${e.message?.lineSequence()?.firstOrNull() ?: e.javaClass.simpleName}") }
+            ?: return error("no readable source for '$id' (${n.origin.name.lowercase()}); decompiling is limited to internal jars")
         val s = lines?.let { r ->
             val ls = whole.text.lines()
             val from = (r.first - whole.startLine).coerceIn(0, ls.size)
