@@ -241,8 +241,9 @@ class Queries(
 
     /** Every member an id denotes: `a.Foo#save` is all overloads of save, `a.Foo#save(Owner)` one of them. */
     private fun resolveAll(id: String): List<Node> = store.node(id)?.let { listOf(it) } ?: if ('#' !in id && '.' !in id) {
-        // a bare class name: the one class so called, or the candidates when there are several
+        // a bare class name: the one class so called, or the candidates when there are several; the project's own first
         TYPES.flatMap { k -> store.nodes(k) }.filter { it.id.substringAfterLast('.').substringAfterLast('$') == id }
+            .let { all -> all.filter { it.origin == Origin.REPO }.ifEmpty { all } }
     } else if ('#' in id) {
         // the member as the answer printed it or as the graph names it: `<init>(String)` and `<init>(java.lang.String)`
         // are the same member, and the second form failed beside a bare class name
@@ -251,7 +252,9 @@ class Queries(
         // of each that matches; two of them are candidates, not a guess
         val cls = owner(id)
         val owners = if (store.node(cls) != null || '.' in cls) listOf(cls)
-            else TYPES.flatMap { k -> store.nodes(k) }.filter { it.id.substringAfterLast('.') == cls }.map { it.id }
+            else TYPES.flatMap { k -> store.nodes(k) }.filter { it.id.substringAfterLast('.') == cls }
+                // the project's own class before a jar's copy of the same name, whose source is often not on disk
+                .let { all -> all.filter { it.origin == Origin.REPO }.ifEmpty { all } }.map { it.id }
         owners.flatMap { o -> store.edgesFrom(o, EdgeKind.CONTAINS).mapNotNull { store.node(it.to) } }
             .filter { m -> shortName(m) == want || ('(' !in want && shortName(m).substringBefore('(') == want) }
     } else emptyList()
@@ -429,7 +432,7 @@ class Queries(
         val reader = sources ?: return error("source reading is not available in this server")
         // a file the node names that is not on this machine (a graph built elsewhere, a path case Windows rejects) threw
         // out of the whole batch, and the valid body before it was lost with it
-        val whole = runCatching { reader.read(n, contextLines) }.getOrElse { e -> return error("no readable source for '$id': ${e.message?.lineSequence()?.firstOrNull() ?: e.javaClass.simpleName}") }
+        val whole = runCatching { reader.read(n, contextLines) }.getOrElse { e -> return error("no readable source for '$id' at ${n.file ?: "(no file)"}: ${e.message?.lineSequence()?.firstOrNull() ?: e.javaClass.simpleName}") }
             ?: return error("no readable source for '$id' (${n.origin.name.lowercase()}); decompiling is limited to internal jars")
         val s = lines?.let { r ->
             val ls = whole.text.lines()
@@ -437,7 +440,7 @@ class Queries(
             val to = (r.last - whole.startLine + 1).coerceIn(from, ls.size)
             SourceReader.Source(whole.file, whole.startLine + from, ls.subList(from, to).joinToString("\n"), whole.decompiled)
         } ?: whole
-        return buildJsonObject { put("id", id); sourceJson(s).forEach { (k, v) -> put(k, v) }; staleFor(n)?.let { put("stale", it) } }
+        return buildJsonObject { put("id", id); sourceJson(s).forEach { (k, v) -> put(k, v) }; runCatching { staleFor(n) }.getOrNull()?.let { put("stale", it) } }
     }
 
     /**
@@ -450,7 +453,8 @@ class Queries(
         val done = ArrayList<JsonObject>()
         val pending = ArrayList<String>()
         for (id in ids) {
-            val r = readSource(id)
+            // whatever one id throws is that id's error line; the bodies before and after it are still delivered
+            val r = runCatching { readSource(id) }.getOrElse { e -> error("could not read '$id': ${e.message?.lineSequence()?.firstOrNull() ?: e.javaClass.simpleName}") }
             val text = r["text"]?.jsonPrimitive?.content
             when {
                 text == null -> done += r
