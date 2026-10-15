@@ -92,10 +92,13 @@ object Render {
 
     /** One body, or a batch of them (`sources` with `pending`). Errors and candidate lists stay readable too. */
     fun sources(o: JsonObject): String = buildString {
-        o["sources"]?.jsonArray?.let { list ->
+        val list = o["sources"]?.jsonArray
+        // a batch with nothing pending ended in an empty `### :1-1` block: the last expression of the block was the
+        // absent pending list, and the fallback then printed the whole object as one body
+        if (list == null) append(source(o)) else {
             for (s in list.map { it.jsonObject }) { append(source(s)); appendLine() }
             o["pending"]?.jsonArray?.takeIf { it.isNotEmpty() }?.let { p -> appendLine("pending (did not fit; ask for them next): " + p.joinToString(", ") { it.jsonPrimitive.content }) }
-        } ?: append(source(o))
+        }
     }
 
     /** `### file:start-end  id  callers N`, numbered lines, then `calls:`; an error or candidates list as is. */

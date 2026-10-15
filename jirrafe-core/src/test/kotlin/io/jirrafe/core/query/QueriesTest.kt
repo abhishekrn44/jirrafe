@@ -254,4 +254,10 @@ class QueriesTest {
         assertContains(text, "  - Util1#f()  @ src/b/Util1.java:10", message = "flow steps print the short id")
         assertContains(text, "  a.OrderService#open()", message = "the body header keeps the full id")
     }
+
+    @Test
+    fun `a batch with nothing pending ends with its last body, not an empty block`() {
+        val text = Render.sources(q.readSources(listOf("a.OrderService#open()", "a.Nope#x()")))
+        assertTrue(text.trimEnd().endsWith("error: no node 'a.Nope#x()'"), "no stray block after the error: $text")
+    }
 }
